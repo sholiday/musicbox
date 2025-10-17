@@ -5,10 +5,8 @@ edition = "2024"
 
 [features]
 default = []
-
-# Enables Rodio-based audio playback. Off by default because it pulls in system audio
-# libraries that may not exist on the development machine.
 audio-rodio = ["dep:rodio"]
+nfc-pcsc = ["dep:pcsc"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -16,3 +14,4 @@ thiserror = "1.0"
 toml = "0.8"
 tempfile = "3.12"
 rodio = { version = "0.21.1", optional = true }
+pcsc = { version = "2.9.0", optional = true }

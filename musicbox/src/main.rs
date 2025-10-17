@@ -20,6 +20,8 @@ enum RunError {
     App(#[from] musicbox::app::AppError),
     #[error(transparent)]
     Loop(#[from] RunLoopError),
+    #[error(transparent)]
+    Reader(#[from] ReaderError),
 }
 
 fn run() -> Result<(), RunError> {
@@ -39,7 +41,7 @@ fn run() -> Result<(), RunError> {
     };
 
     let mut controller = controller_from_config_path(&config_path, player)?;
-    let mut reader = NoopReader::default();
+    let mut reader = select_reader()?;
 
     println!("Loaded configuration from {}", config_path);
     println!("Awaiting NFC interactions (reader not connected in this environment).");
@@ -89,5 +91,17 @@ struct NoopReader;
 impl NfcReader for NoopReader {
     fn next_event(&mut self) -> Result<ReaderEvent, ReaderError> {
         Ok(ReaderEvent::Shutdown)
+    }
+}
+
+fn select_reader() -> Result<Box<dyn NfcReader>, ReaderError> {
+    #[cfg(feature = "nfc-pcsc")]
+    {
+        let reader = musicbox::reader::pcsc_backend::PcscReader::new(Duration::from_millis(200))?;
+        return Ok(Box::new(reader));
+    }
+    #[cfg(not(feature = "nfc-pcsc"))]
+    {
+        Ok(Box::new(NoopReader::default()))
     }
 }
