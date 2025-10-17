@@ -37,7 +37,9 @@ impl<T: NfcReader + ?Sized> NfcReader for Box<T> {
 #[cfg(feature = "nfc-pcsc")]
 pub mod pcsc_backend {
     use super::{CardUid, NfcReader, ReaderError, ReaderEvent};
-    use pcsc::{Card, Context, Error as PcscError, Protocols, Scope, ShareMode, State, MAX_ATR_SIZE};
+    use pcsc::{
+        Card, Context, Error as PcscError, MAX_ATR_SIZE, Protocols, Scope, ShareMode, State,
+    };
     use std::time::Duration;
 
     pub struct PcscReader {

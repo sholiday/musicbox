@@ -1,7 +1,9 @@
+use clap::{Parser, ValueEnum, builder::ValueHint};
 use musicbox::app::{RunLoopError, controller_from_config_path, run_until_shutdown};
 use musicbox::audio::RodioPlayer;
 use musicbox::controller::{AudioPlayer, PlayerError, Track};
 use musicbox::reader::{NfcReader, ReaderError, ReaderEvent};
+use std::path::PathBuf;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -14,8 +16,6 @@ fn main() {
 
 #[derive(Debug, Error)]
 enum RunError {
-    #[error("usage: {program} <config-path>")]
-    MissingConfigPath { program: String },
     #[error(transparent)]
     App(#[from] musicbox::app::AppError),
     #[error(transparent)]
@@ -24,26 +24,48 @@ enum RunError {
     Reader(#[from] ReaderError),
 }
 
-fn run() -> Result<(), RunError> {
-    let mut args = std::env::args();
-    let program = args.next().unwrap_or_else(|| "musicbox".into());
-    let config_path = match args.next() {
-        Some(path) => path,
-        None => return Err(RunError::MissingConfigPath { program }),
-    };
+#[derive(Debug, Parser)]
+#[command(author, version, about = "NFC-triggered music player", long_about = None)]
+struct Cli {
+    #[arg(value_name = "CONFIG", value_hint = ValueHint::FilePath)]
+    config: PathBuf,
 
-    let player = match RodioPlayer::new() {
-        Ok(player) => PlayerBackend::Rodio(player),
-        Err(err) => {
-            eprintln!("Audio backend unavailable ({err}). Falling back to silent playback.");
-            PlayerBackend::Noop
+    #[arg(long, default_value_t = 200, value_name = "MILLIS")]
+    poll_interval_ms: u64,
+
+    #[arg(long, value_enum, default_value_t = ReaderKind::Auto)]
+    reader: ReaderKind,
+
+    #[arg(long, help = "Disable audio playback (use silent mode)")]
+    silent: bool,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum ReaderKind {
+    Auto,
+    Pcsc,
+    Noop,
+}
+
+fn run() -> Result<(), RunError> {
+    let cli = Cli::parse();
+
+    let player = if cli.silent {
+        PlayerBackend::Noop
+    } else {
+        match RodioPlayer::new() {
+            Ok(player) => PlayerBackend::Rodio(player),
+            Err(err) => {
+                eprintln!("Audio backend unavailable ({err}). Falling back to silent playback.");
+                PlayerBackend::Noop
+            }
         }
     };
 
-    let mut controller = controller_from_config_path(&config_path, player)?;
-    let mut reader = select_reader()?;
+    let mut controller = controller_from_config_path(&cli.config, player)?;
+    let mut reader = select_reader(cli.reader, Duration::from_millis(cli.poll_interval_ms))?;
 
-    println!("Loaded configuration from {}", config_path);
+    println!("Loaded configuration from {}", cli.config.display());
     println!("Awaiting NFC interactions (reader not connected in this environment).");
 
     run_until_shutdown(
@@ -94,14 +116,29 @@ impl NfcReader for NoopReader {
     }
 }
 
-fn select_reader() -> Result<Box<dyn NfcReader>, ReaderError> {
-    #[cfg(feature = "nfc-pcsc")]
-    {
-        let reader = musicbox::reader::pcsc_backend::PcscReader::new(Duration::from_millis(200))?;
-        return Ok(Box::new(reader));
+fn select_reader(kind: ReaderKind, poll: Duration) -> Result<Box<dyn NfcReader>, ReaderError> {
+    match kind {
+        ReaderKind::Noop => Ok(Box::new(NoopReader::default())),
+        ReaderKind::Pcsc => build_pcsc_reader(poll),
+        ReaderKind::Auto => match build_pcsc_reader(poll) {
+            Ok(reader) => Ok(reader),
+            Err(err) => {
+                eprintln!("PC/SC reader unavailable ({err}); falling back to noop reader.");
+                Ok(Box::new(NoopReader::default()))
+            }
+        },
     }
-    #[cfg(not(feature = "nfc-pcsc"))]
-    {
-        Ok(Box::new(NoopReader::default()))
-    }
+}
+
+#[cfg(feature = "nfc-pcsc")]
+fn build_pcsc_reader(poll: Duration) -> Result<Box<dyn NfcReader>, ReaderError> {
+    let reader = musicbox::reader::pcsc_backend::PcscReader::new(poll)?;
+    Ok(Box::new(reader))
+}
+
+#[cfg(not(feature = "nfc-pcsc"))]
+fn build_pcsc_reader(_poll: Duration) -> Result<Box<dyn NfcReader>, ReaderError> {
+    Err(ReaderError::backend(
+        "pcsc support not built; recompile with `--features nfc-pcsc`",
+    ))
 }
