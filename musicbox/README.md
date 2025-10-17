@@ -45,6 +45,8 @@ Options:
 - `--reader {auto|pcsc|noop}`: force reader choice; `auto` tries PC/SC then falls back to noop.
 - `--silent`: skip audio playback regardless of backend availability.
 
+A starter config can be found in `examples/config.example.toml`.
+
 ## Raspberry Pi Targets
 
 - Pi 2/3, standard 32‑bit Raspberry Pi OS.

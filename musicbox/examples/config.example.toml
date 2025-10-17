@@ -1,0 +1,6 @@
+music_dir = "/home/pi/music"
+
+[cards]
+# Replace the keys with the hex UID (no spaces) of each NFC tag/card.
+"04a0b1c2d3" = "song1.mp3"
+"abcd1234" = "album/track02.ogg"
