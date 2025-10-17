@@ -1,4 +1,5 @@
 use musicbox::app::{RunLoopError, controller_from_config_path, run_until_shutdown};
+use musicbox::audio::RodioPlayer;
 use musicbox::controller::{AudioPlayer, PlayerError, Track};
 use musicbox::reader::{NfcReader, ReaderError, ReaderEvent};
 use std::time::Duration;
@@ -29,7 +30,15 @@ fn run() -> Result<(), RunError> {
         None => return Err(RunError::MissingConfigPath { program }),
     };
 
-    let mut controller = controller_from_config_path(&config_path, NoopPlayer)?;
+    let player = match RodioPlayer::new() {
+        Ok(player) => PlayerBackend::Rodio(player),
+        Err(err) => {
+            eprintln!("Audio backend unavailable ({err}). Falling back to silent playback.");
+            PlayerBackend::Noop
+        }
+    };
+
+    let mut controller = controller_from_config_path(&config_path, player)?;
     let mut reader = NoopReader::default();
 
     println!("Loaded configuration from {}", config_path);
@@ -47,17 +56,30 @@ fn run() -> Result<(), RunError> {
     Ok(())
 }
 
-struct NoopPlayer;
+enum PlayerBackend {
+    Rodio(RodioPlayer),
+    Noop,
+}
 
-impl AudioPlayer for NoopPlayer {
+impl AudioPlayer for PlayerBackend {
     fn play(&mut self, track: &Track) -> Result<(), PlayerError> {
-        println!("Would play track: {}", track.path().display());
-        Ok(())
+        match self {
+            PlayerBackend::Rodio(player) => player.play(track),
+            PlayerBackend::Noop => {
+                println!("[silent] Would play track: {}", track.path().display());
+                Ok(())
+            }
+        }
     }
 
     fn stop(&mut self) -> Result<(), PlayerError> {
-        println!("Would stop playback");
-        Ok(())
+        match self {
+            PlayerBackend::Rodio(player) => player.stop(),
+            PlayerBackend::Noop => {
+                println!("[silent] Would stop playback");
+                Ok(())
+            }
+        }
     }
 }
 
