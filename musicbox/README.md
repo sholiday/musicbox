@@ -25,6 +25,9 @@ cargo test --features nfc-pcsc
 
 # Combine features as needed
 cargo test --features "audio-rodio nfc-pcsc"
+
+# Include the optional debug HTTP server
+cargo test --features "audio-rodio nfc-pcsc debug-http"
 ```
 
 ### Binary Usage
@@ -44,6 +47,7 @@ Options:
 - `--poll-interval-ms`: adjust NFC polling interval (default `200` ms).
 - `--reader {auto|pcsc|noop}`: force reader choice; `auto` tries PC/SC then falls back to noop.
 - `--silent`: skip audio playback regardless of backend availability.
+- `--debug-http <addr>` *(requires `debug-http` feature)*: expose telemetry via Axum (e.g. `127.0.0.1:3000`).
 
 A starter config can be found in `examples/config.example.toml`.
 
