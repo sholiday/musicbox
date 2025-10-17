@@ -1,8 +1,7 @@
-use musicbox::app::{
-    ProcessOutcome, RunLoopError, controller_from_config_path, process_next_event,
-};
+use musicbox::app::{RunLoopError, controller_from_config_path, run_until_shutdown};
 use musicbox::controller::{AudioPlayer, PlayerError, Track};
 use musicbox::reader::{NfcReader, ReaderError, ReaderEvent};
+use std::time::Duration;
 use thiserror::Error;
 
 fn main() {
@@ -36,11 +35,14 @@ fn run() -> Result<(), RunError> {
     println!("Loaded configuration from {}", config_path);
     println!("Awaiting NFC interactions (reader not connected in this environment).");
 
-    match process_next_event(&mut controller, &mut reader)? {
-        ProcessOutcome::Action(action) => println!("Simulated action: {:?}", action),
-        ProcessOutcome::NoEvent => println!("No reader events to process."),
-        ProcessOutcome::Shutdown => println!("Reader requested shutdown."),
-    }
+    run_until_shutdown(
+        &mut controller,
+        &mut reader,
+        |action| println!("Simulated action: {:?}", action),
+        || std::thread::sleep(Duration::from_millis(200)),
+    )?;
+
+    println!("Reader requested shutdown. Exiting.");
 
     Ok(())
 }

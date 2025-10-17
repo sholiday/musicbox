@@ -64,6 +64,28 @@ where
     }
 }
 
+pub fn run_until_shutdown<R, P, OnAction, OnIdle>(
+    controller: &mut MusicBoxController<P>,
+    reader: &mut R,
+    mut on_action: OnAction,
+    mut on_idle: OnIdle,
+) -> Result<(), RunLoopError>
+where
+    R: NfcReader,
+    P: AudioPlayer,
+    OnAction: FnMut(&ControllerAction),
+    OnIdle: FnMut(),
+{
+    loop {
+        match process_next_event(controller, reader)? {
+            ProcessOutcome::Action(action) => on_action(&action),
+            ProcessOutcome::NoEvent => on_idle(),
+            ProcessOutcome::Shutdown => break,
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +304,59 @@ music_dir = "/music"
             err,
             RunLoopError::Reader(ReaderError::Backend { .. })
         ));
+    }
+
+    #[test]
+    fn run_until_shutdown_invokes_callbacks_until_shutdown() {
+        let player = MockPlayer::new();
+        let mut controller = controller_with_tracks(
+            vec![("0102", "/music/song1.mp3"), ("0304", "/music/song2.mp3")],
+            player.clone(),
+        );
+        let mut reader = ScriptedReader::from_events(vec![
+            ReaderEvent::CardPresent {
+                uid: CardUid::from_hex("0102").unwrap(),
+            },
+            ReaderEvent::Idle,
+            ReaderEvent::CardPresent {
+                uid: CardUid::from_hex("0304").unwrap(),
+            },
+            ReaderEvent::Shutdown,
+        ]);
+
+        let mut actions = Vec::new();
+        let mut idle_calls = 0usize;
+        run_until_shutdown(
+            &mut controller,
+            &mut reader,
+            |action| actions.push(action.clone()),
+            || idle_calls += 1,
+        )
+        .unwrap();
+
+        assert_eq!(idle_calls, 1);
+        assert_eq!(
+            actions,
+            vec![
+                ControllerAction::Started {
+                    card: CardUid::from_hex("0102").unwrap(),
+                    track: Track::new(PathBuf::from("/music/song1.mp3")),
+                },
+                ControllerAction::Switched {
+                    from_card: CardUid::from_hex("0102").unwrap(),
+                    from_track: Track::new(PathBuf::from("/music/song1.mp3")),
+                    to_card: CardUid::from_hex("0304").unwrap(),
+                    to_track: Track::new(PathBuf::from("/music/song2.mp3")),
+                },
+            ]
+        );
+        assert_eq!(
+            player.calls(),
+            vec![
+                Call::Play(PathBuf::from("/music/song1.mp3")),
+                Call::Stop,
+                Call::Play(PathBuf::from("/music/song2.mp3")),
+            ]
+        );
     }
 }
