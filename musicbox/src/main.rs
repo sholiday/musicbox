@@ -1,5 +1,8 @@
-use musicbox::app::controller_from_config_path;
+use musicbox::app::{
+    ProcessOutcome, RunLoopError, controller_from_config_path, process_next_event,
+};
 use musicbox::controller::{AudioPlayer, PlayerError, Track};
+use musicbox::reader::{NfcReader, ReaderError, ReaderEvent};
 use thiserror::Error;
 
 fn main() {
@@ -15,6 +18,8 @@ enum RunError {
     MissingConfigPath { program: String },
     #[error(transparent)]
     App(#[from] musicbox::app::AppError),
+    #[error(transparent)]
+    Loop(#[from] RunLoopError),
 }
 
 fn run() -> Result<(), RunError> {
@@ -25,9 +30,17 @@ fn run() -> Result<(), RunError> {
         None => return Err(RunError::MissingConfigPath { program }),
     };
 
-    let _controller = controller_from_config_path(&config_path, NoopPlayer)?;
+    let mut controller = controller_from_config_path(&config_path, NoopPlayer)?;
+    let mut reader = NoopReader::default();
+
     println!("Loaded configuration from {}", config_path);
     println!("Awaiting NFC interactions (reader not connected in this environment).");
+
+    match process_next_event(&mut controller, &mut reader)? {
+        ProcessOutcome::Action(action) => println!("Simulated action: {:?}", action),
+        ProcessOutcome::NoEvent => println!("No reader events to process."),
+        ProcessOutcome::Shutdown => println!("Reader requested shutdown."),
+    }
 
     Ok(())
 }
@@ -43,5 +56,14 @@ impl AudioPlayer for NoopPlayer {
     fn stop(&mut self) -> Result<(), PlayerError> {
         println!("Would stop playback");
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct NoopReader;
+
+impl NfcReader for NoopReader {
+    fn next_event(&mut self) -> Result<ReaderEvent, ReaderError> {
+        Ok(ReaderEvent::Shutdown)
     }
 }
