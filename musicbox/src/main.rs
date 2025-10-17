@@ -4,6 +4,8 @@ use musicbox::audio::RodioPlayer;
 use musicbox::controller::{AudioPlayer, PlayerError, Track};
 use musicbox::reader::{NfcReader, ReaderError, ReaderEvent};
 use musicbox::telemetry::{self, SharedStatus};
+#[cfg(feature = "debug-http")]
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use thiserror::Error;
@@ -41,6 +43,10 @@ struct Cli {
 
     #[arg(long, help = "Disable audio playback (use silent mode)")]
     silent: bool,
+
+    #[cfg(feature = "debug-http")]
+    #[arg(long, value_name = "ADDR", value_hint = ValueHint::HostnamePort)]
+    debug_http: Option<SocketAddr>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -71,6 +77,16 @@ fn run() -> Result<(), RunError> {
     let status = SharedStatus::default();
     let idle_status = status.clone();
 
+    #[cfg(feature = "debug-http")]
+    if let Some(addr) = cli.debug_http {
+        let server_status = status.clone();
+        std::thread::spawn(move || {
+            if let Err(err) = musicbox::web::serve(server_status, addr) {
+                tracing::error!(?err, "debug server terminated");
+            }
+        });
+    }
+
     println!("Loaded configuration from {}", cli.config.display());
     println!("Awaiting NFC interactions (reader not connected in this environment).");
 
@@ -80,6 +96,7 @@ fn run() -> Result<(), RunError> {
         &mut controller,
         &mut reader,
         |action| {
+            println!("Controller action: {:?}", action);
             status.record_action(action.clone());
             tracing::info!(?action, "controller action");
         },
@@ -138,7 +155,10 @@ fn select_reader(kind: ReaderKind, poll: Duration) -> Result<Box<dyn NfcReader>,
         ReaderKind::Auto => match build_pcsc_reader(poll) {
             Ok(reader) => Ok(reader),
             Err(err) => {
-                eprintln!("PC/SC reader unavailable ({err}); falling back to noop reader.");
+                tracing::warn!(
+                    ?err,
+                    "PC/SC reader unavailable; falling back to noop reader"
+                );
                 Ok(Box::new(NoopReader::default()))
             }
         },

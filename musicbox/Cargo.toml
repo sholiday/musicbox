@@ -7,6 +7,7 @@ edition = "2024"
 default = []
 audio-rodio = ["dep:rodio"]
 nfc-pcsc = ["dep:pcsc"]
+debug-http = ["dep:axum", "dep:tokio"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -18,3 +19,5 @@ pcsc = { version = "2.9.0", optional = true }
 clap = { version = "4.5.49", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+axum = { version = "0.7", optional = true, features = ["json"] }
+tokio = { version = "1.40", optional = true, features = ["rt-multi-thread", "macros"] }
