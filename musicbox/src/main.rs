@@ -3,11 +3,14 @@ use musicbox::app::{RunLoopError, controller_from_config_path, run_until_shutdow
 use musicbox::audio::RodioPlayer;
 use musicbox::controller::{AudioPlayer, PlayerError, Track};
 use musicbox::reader::{NfcReader, ReaderError, ReaderEvent};
+use musicbox::telemetry::{self, SharedStatus};
 use std::path::PathBuf;
 use std::time::Duration;
 use thiserror::Error;
 
 fn main() {
+    telemetry::init_logging();
+
     if let Err(err) = run() {
         eprintln!("{err}");
         std::process::exit(1);
@@ -65,17 +68,29 @@ fn run() -> Result<(), RunError> {
     let mut controller = controller_from_config_path(&cli.config, player)?;
     let mut reader = select_reader(cli.reader, Duration::from_millis(cli.poll_interval_ms))?;
 
+    let status = SharedStatus::default();
+    let idle_status = status.clone();
+
     println!("Loaded configuration from {}", cli.config.display());
     println!("Awaiting NFC interactions (reader not connected in this environment).");
+
+    let sleep_duration = Duration::from_millis(cli.poll_interval_ms);
 
     run_until_shutdown(
         &mut controller,
         &mut reader,
-        |action| println!("Simulated action: {:?}", action),
-        || std::thread::sleep(Duration::from_millis(200)),
+        |action| {
+            status.record_action(action.clone());
+            tracing::info!(?action, "controller action");
+        },
+        || {
+            idle_status.record_idle();
+            std::thread::sleep(sleep_duration);
+        },
     )?;
 
     println!("Reader requested shutdown. Exiting.");
+    tracing::info!(snapshot = ?status.snapshot(), "final status");
 
     Ok(())
 }
