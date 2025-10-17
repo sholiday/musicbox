@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CardUid(pub Vec<u8>);
@@ -8,6 +8,36 @@ impl CardUid {
     pub fn new(bytes: Vec<u8>) -> Self {
         Self(bytes)
     }
+
+    pub fn from_hex(hex: &str) -> Result<Self, CardUidParseError> {
+        if hex.len() % 2 != 0 {
+            return Err(CardUidParseError::OddLength);
+        }
+
+        let mut bytes = Vec::with_capacity(hex.len() / 2);
+        let mut chars = hex.chars();
+        while let Some(high) = chars.next() {
+            let low = chars.next().expect("length already validated");
+            let hi = hex_value(high)?;
+            let lo = hex_value(low)?;
+            bytes.push((hi << 4) | lo);
+        }
+        Ok(Self(bytes))
+    }
+}
+
+fn hex_value(c: char) -> Result<u8, CardUidParseError> {
+    c.to_digit(16)
+        .map(|v| v as u8)
+        .ok_or(CardUidParseError::InvalidHex(c))
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum CardUidParseError {
+    #[error("hex string must have an even number of characters")]
+    OddLength,
+    #[error("invalid hex character: {0}")]
+    InvalidHex(char),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +48,10 @@ pub struct Track {
 impl Track {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }
 
@@ -193,6 +227,24 @@ mod tests {
 
     fn uid(bytes: &[u8]) -> CardUid {
         CardUid::new(bytes.to_vec())
+    }
+
+    #[test]
+    fn card_uid_from_hex_parses_bytes() {
+        let parsed = CardUid::from_hex("0a0b0c0d").unwrap();
+        assert_eq!(parsed, uid(&[0x0a, 0x0b, 0x0c, 0x0d]));
+    }
+
+    #[test]
+    fn card_uid_from_hex_rejects_odd_length() {
+        let err = CardUid::from_hex("abc").unwrap_err();
+        assert_eq!(err, CardUidParseError::OddLength);
+    }
+
+    #[test]
+    fn card_uid_from_hex_rejects_invalid_chars() {
+        let err = CardUid::from_hex("zz").unwrap_err();
+        assert_eq!(err, CardUidParseError::InvalidHex('z'));
     }
 
     #[test]
