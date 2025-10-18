@@ -84,6 +84,7 @@ mod rodio_backend {
 mod rodio_backend {
     use super::*;
 
+    #[derive(Debug, Default)]
     pub struct RodioPlayer;
 
     impl RodioPlayer {
@@ -104,6 +105,25 @@ mod rodio_backend {
 
         fn stop(&mut self) -> Result<(), PlayerError> {
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn new_reports_disabled_backend() {
+            match RodioPlayer::new() {
+                Ok(_) => panic!("expected error"),
+                Err(err) => assert!(matches!(err, PlayerError::Backend { .. })),
+            }
+        }
+
+        #[test]
+        fn stop_is_noop() {
+            let mut player = RodioPlayer::default();
+            player.stop().expect("stop should succeed");
         }
     }
 }

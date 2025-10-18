@@ -177,3 +177,25 @@ fn build_pcsc_reader(_poll: Duration) -> Result<Box<dyn NfcReader>, ReaderError>
         "pcsc support not built; recompile with `--features nfc-pcsc`",
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn select_reader_noop() {
+        let reader = select_reader(ReaderKind::Noop, Duration::from_millis(1)).unwrap();
+        let mut reader = reader;
+        let event = reader.next_event().unwrap();
+        assert!(matches!(event, ReaderEvent::Shutdown));
+    }
+
+    #[cfg(not(feature = "nfc-pcsc"))]
+    #[test]
+    fn select_reader_pcsc_without_feature_errors() {
+        match select_reader(ReaderKind::Pcsc, Duration::from_millis(1)) {
+            Ok(_) => panic!("expected pcsc selection to fail"),
+            Err(err) => assert!(matches!(err, ReaderError::Backend { .. })),
+        }
+    }
+}
