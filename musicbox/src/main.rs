@@ -155,6 +155,9 @@ fn select_reader(kind: ReaderKind, poll: Duration) -> Result<Box<dyn NfcReader>,
         ReaderKind::Auto => match build_pcsc_reader(poll) {
             Ok(reader) => Ok(reader),
             Err(err) => {
+                // Treat hardware absence as non-fatal. We still want the system
+                // to boot and expose diagnostics even if the USB reader is
+                // unplugged during development or unit testing.
                 tracing::warn!(
                     ?err,
                     "PC/SC reader unavailable; falling back to noop reader"

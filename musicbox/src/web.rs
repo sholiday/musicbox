@@ -1,3 +1,7 @@
+//! Minimal Axum server exposing the latest controller status. This lives behind
+//! an optional feature so production images can stay lean, but provides
+//! invaluable visibility while iterating on hardware behavior.
+
 use crate::telemetry::{SharedStatus, StatusSnapshot};
 use axum::{Json, Router, routing::get};
 use serde::Serialize;

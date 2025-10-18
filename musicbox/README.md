@@ -4,12 +4,12 @@ This project is an NFC‑triggered music player aimed at running on a Raspberry 
 
 ## Current Architecture
 
-- `controller`: Pure domain logic mapping card UIDs to tracks. Works with any `AudioPlayer` implementation.
+- `controller`: Pure domain logic mapping card UIDs to tracks. Works with any `AudioPlayer` implementation so we can exercise it thoroughly in unit tests without bringing hardware along.
 - `config`: Loads card→track mappings from a TOML file and produces a `Library`.
-- `audio`: Optional backends implementing `AudioPlayer`. `RodioPlayer` is enabled via the `audio-rodio` Cargo feature; otherwise a silent stub is available.
-- `reader`: Defines the `NfcReader` trait. A PC/SC implementation behind the `nfc-pcsc` feature polls an attached ACR122U reader; a noop reader is used otherwise.
+- `audio`: Optional backends implementing `AudioPlayer`. `RodioPlayer` is enabled via the `audio-rodio` Cargo feature; otherwise a silent stub is available, letting the app boot in CI or on dev laptops without ALSA.
+- `reader`: Defines the `NfcReader` trait. A PC/SC implementation behind the `nfc-pcsc` feature polls an attached ACR122U reader; a noop reader is used otherwise so we can still run and observe telemetry on machines without the hardware.
 - `app`: Glue code that loads config, wires the controller to a reader, and runs the event loop with callback hooks.
-- `main`: CLI entry point built on clap. Allows selecting reader backend, poll interval, config path, and silent mode.
+- `main`: CLI entry point built on clap. Allows selecting reader backend, poll interval, config path, and silent mode so the same binary can serve development, test rigs, and the Pi image.
 
 ## Key Commands
 
@@ -50,6 +50,16 @@ Options:
 - `--debug-http <addr>` *(requires `debug-http` feature)*: expose telemetry via Axum (e.g. `127.0.0.1:3000`).
 
 A starter config can be found in `examples/config.example.toml`.
+
+### Why the optional features?
+
+The binary needs to run in a few different contexts:
+
+- **CI / developer laptops** – usually missing ALSA and PC/SC headers. The default build therefore avoids those dependencies so `cargo test` stays fast and hermetic.
+- **Raspberry Pi image** – supply `--features "audio-rodio nfc-pcsc"` so the concrete Rodio player and PC/SC reader are compiled in and the hardware works at runtime.
+- **Debug rigs** – when you want the Axum status surface, also enable `debug-http` and pass `--debug-http <addr>` on the CLI. The server lives on a separate thread to avoid blocking the reader loop.
+
+Keeping these concerns behind feature flags lets us ship one codebase while still producing lightweight binaries for automated pipelines.
 
 ## Raspberry Pi Targets
 
