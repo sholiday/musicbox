@@ -1,0 +1,1 @@
+Test coverage via cargo-tarpaulin (Rust 1.90.0, tarpaulin 0.33.0): 61.83% (115/186 lines covered). Low coverage areas: main.rs, audio.rs, reader.rs. Suggested next steps: add integration tests covering CLI paths (maybe via assert_cmd) and audio/PCSC feature tests. Remove this report after review.
