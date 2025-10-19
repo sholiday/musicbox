@@ -17,6 +17,11 @@ This project is an NFC‑triggered music player aimed at running on a Raspberry 
 # Run tests (default features only; no audio/NFC backends required)
 cargo test
 
+# Cross-compile for Raspberry Pi (armv7)
+scripts/build-armv7.sh --release
+# Include optional features when needed
+CARGO_FEATURES="audio-rodio nfc-pcsc" scripts/build-armv7.sh --release
+
 # Run with Rodio audio support (requires system audio libs)
 cargo test --features audio-rodio
 
@@ -63,6 +68,14 @@ Keeping these concerns behind feature flags lets us ship one codebase while stil
 
 ## Raspberry Pi Targets
 
+- Build everything from your dev machine; the Pi only needs the deployed binaries. Use
+  `scripts/build-armv7.sh` to produce the `armv7-unknown-linux-gnueabihf` artifacts and copy the
+  resulting files under `target/armv7-unknown-linux-gnueabihf/{debug,release}` to the Pi (e.g.,
+  via `rsync`). The script wires up the required `pkg-config` environment so ALSA and PC/SC
+  libraries resolve correctly when optional features are enabled.
+- For on-device testing without installing Rust, cross-compile the test harnesses with
+  `scripts/build-armv7.sh --tests`, copy the executables from
+  `target/armv7-unknown-linux-gnueabihf/debug/deps/` to the Pi, and run them there.
 - Pi 2/3, standard 32‑bit Raspberry Pi OS.
 - NFC reader: ACR122U (PC/SC).
 - Audio: Raspberry Pi audio output via Rodio/CPAL (requires ALSA).
