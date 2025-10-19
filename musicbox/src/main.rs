@@ -30,6 +30,8 @@ enum RunError {
     Reader(#[from] ReaderError),
     #[error(transparent)]
     Tag(#[from] TagError),
+    #[error("audio player error: {0}")]
+    Player(#[from] PlayerError),
     #[error("configuration path required")]
     MissingConfig,
 }
@@ -67,11 +69,24 @@ struct Cli {
 enum Command {
     #[command(subcommand)]
     Tag(TagCommand),
+    #[command(subcommand)]
+    Manual(ManualCommand),
 }
 
 #[derive(Debug, Subcommand)]
 enum TagCommand {
     Add(TagAddArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum ManualCommand {
+    Trigger(ManualTriggerArgs),
+}
+
+#[derive(Debug, Args)]
+struct ManualTriggerArgs {
+    #[arg(value_name = "UID", help = "Hex-encoded card UID (no spaces)")]
+    card: String,
 }
 
 #[derive(Debug, Args)]
@@ -152,6 +167,10 @@ fn run() -> Result<(), RunError> {
     match command {
         Some(Command::Tag(tag_command)) => {
             handle_tag_command(tag_command, reader, poll_interval_ms)?;
+        }
+        Some(Command::Manual(manual_command)) => {
+            let config_path = config.clone().ok_or(RunError::MissingConfig)?;
+            handle_manual_command(manual_command, config_path, silent)?;
         }
         None => {
             let config_path = config.ok_or(RunError::MissingConfig)?;
@@ -319,6 +338,42 @@ fn attempt_tag_write(
     Ok(())
 }
 
+fn handle_manual_command(
+    command: ManualCommand,
+    config_path: PathBuf,
+    silent: bool,
+) -> Result<(), RunError> {
+    let player = if silent {
+        PlayerBackend::Noop
+    } else {
+        match RodioPlayer::new() {
+            Ok(player) => PlayerBackend::Rodio(player),
+            Err(err) => {
+                eprintln!("Audio backend unavailable ({err}). Falling back to silent playback.");
+                PlayerBackend::Noop
+            }
+        }
+    };
+
+    let mut controller = controller_from_config_path(&config_path, player)?;
+
+    match command {
+        ManualCommand::Trigger(args) => {
+            let uid = CardUid::from_hex(args.card.trim())
+                .map_err(TagError::CardUidParse)
+                .map_err(RunError::Tag)?;
+            let action = controller
+                .handle_card(&uid)
+                .map_err(RunLoopError::from)
+                .map_err(RunError::Loop)?;
+            println!("Manual trigger produced action: {:?}", action);
+            controller.wait_for_player()?;
+        }
+    }
+
+    Ok(())
+}
+
 enum PlayerBackend {
     Rodio(RodioPlayer),
     Noop,
@@ -342,6 +397,13 @@ impl AudioPlayer for PlayerBackend {
                 println!("[silent] Would stop playback");
                 Ok(())
             }
+        }
+    }
+
+    fn wait_until_done(&mut self) -> Result<(), PlayerError> {
+        match self {
+            PlayerBackend::Rodio(player) => player.wait_until_done(),
+            PlayerBackend::Noop => Ok(()),
         }
     }
 }

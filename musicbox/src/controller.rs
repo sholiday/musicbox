@@ -150,6 +150,10 @@ impl<P: AudioPlayer> MusicBoxController<P> {
         }
     }
 
+    pub fn wait_for_player(&mut self) -> Result<(), PlayerError> {
+        self.player.wait_until_done()
+    }
+
     pub fn handle_card(&mut self, uid: &CardUid) -> Result<ControllerAction, ControllerError> {
         if let Some(active) = &self.active {
             if &active.card == uid {
