@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+pushd "$repo_root/musicbox" >/dev/null
+echo "Running cargo test before commit..."
+cargo test
+popd >/dev/null

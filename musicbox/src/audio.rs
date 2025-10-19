@@ -19,10 +19,7 @@ mod rodio_backend {
                     message: format!("failed to open output stream: {err}"),
                 })?;
             let sink = Sink::connect_new(stream.mixer());
-            Ok(Self {
-                stream,
-                sink,
-            })
+            Ok(Self { stream, sink })
         }
 
         fn load_track(
@@ -31,10 +28,9 @@ mod rodio_backend {
             let file = File::open(path).map_err(|err| PlayerError::Backend {
                 message: format!("failed to open track {path:?}: {err}"),
             })?;
-            let decoder =
-                rodio::Decoder::try_from(file).map_err(|err| PlayerError::Backend {
-                    message: format!("failed to decode track {path:?}: {err}"),
-                })?;
+            let decoder = rodio::Decoder::try_from(file).map_err(|err| PlayerError::Backend {
+                message: format!("failed to decode track {path:?}: {err}"),
+            })?;
             Ok(decoder)
         }
 

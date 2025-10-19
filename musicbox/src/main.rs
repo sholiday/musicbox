@@ -409,12 +409,30 @@ impl AudioPlayer for PlayerBackend {
     }
 }
 
-#[derive(Default)]
-struct NoopReader;
+struct NoopReader {
+    shutdown_next: bool,
+    shutdown_sent: bool,
+}
+
+impl Default for NoopReader {
+    fn default() -> Self {
+        let shutdown_next = std::env::var("MUSICBOX_NOOP_SHUTDOWN")
+            .map(|val| val != "0")
+            .unwrap_or(false);
+        Self {
+            shutdown_next,
+            shutdown_sent: false,
+        }
+    }
+}
 
 impl NfcReader for NoopReader {
     fn next_event(&mut self) -> Result<ReaderEvent, ReaderError> {
-        Ok(ReaderEvent::Shutdown)
+        if self.shutdown_next && !self.shutdown_sent {
+            self.shutdown_sent = true;
+            return Ok(ReaderEvent::Shutdown);
+        }
+        Ok(ReaderEvent::Idle)
     }
 }
 
@@ -454,10 +472,17 @@ mod tests {
 
     #[test]
     fn select_reader_noop() {
+        // std::env mutations are unsafe on recent toolchains, so gate them explicitly in tests.
+        unsafe {
+            std::env::set_var("MUSICBOX_NOOP_SHUTDOWN", "1");
+        }
         let reader = select_reader(ReaderKind::Noop, Duration::from_millis(1)).unwrap();
         let mut reader = reader;
         let event = reader.next_event().unwrap();
         assert!(matches!(event, ReaderEvent::Shutdown));
+        unsafe {
+            std::env::remove_var("MUSICBOX_NOOP_SHUTDOWN");
+        }
     }
 
     #[cfg(not(feature = "nfc-pcsc"))]

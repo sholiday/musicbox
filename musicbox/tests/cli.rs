@@ -14,7 +14,8 @@ fn cli_runs_with_noop_reader() {
         .arg("noop")
         .arg("--poll-interval-ms")
         .arg("10")
-        .arg("--silent");
+        .arg("--silent")
+        .env("MUSICBOX_NOOP_SHUTDOWN", "1");
 
     cmd.assert()
         .success()
@@ -33,7 +34,8 @@ fn cli_auto_reader_falls_back_when_pcsc_missing() {
         .arg("auto")
         .arg("--poll-interval-ms")
         .arg("10")
-        .arg("--silent");
+        .arg("--silent")
+        .env("MUSICBOX_NOOP_SHUTDOWN", "1");
 
     cmd.assert()
         .success()

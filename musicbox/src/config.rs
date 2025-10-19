@@ -1,10 +1,12 @@
 use crate::controller::{CardUid, CardUidParseError, Library, Track};
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
 
 use std::path::Path;
+use toml_edit::{DocumentMut, table, value};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -16,6 +18,28 @@ pub enum ConfigError {
     CardUid(#[from] CardUidParseError),
     #[error("duplicate mapping for card {0:?}")]
     DuplicateCard(CardUid),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigEditError {
+    #[error("failed to read config {path:?}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to write config {path:?}: {source}")]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse config: {0}")]
+    Parse(#[from] toml_edit::TomlError),
+    #[error("config missing [cards] table")]
+    MissingCards,
+    #[error("card {0:?} already mapped in config")]
+    Duplicate(CardUid),
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +93,43 @@ impl MusicBoxConfig {
     }
 }
 
+pub fn add_card_to_config(path: &Path, uid: &CardUid, track: &str) -> Result<(), ConfigEditError> {
+    let mut doc = if path.exists() {
+        let contents = fs::read_to_string(path).map_err(|source| ConfigEditError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        contents.parse::<DocumentMut>()?
+    } else {
+        let mut doc = DocumentMut::new();
+        doc["music_dir"] = value("");
+        doc["cards"] = table();
+        doc
+    };
+
+    if !doc.as_table().contains_key("cards") {
+        doc["cards"] = table();
+    }
+
+    let cards = doc["cards"]
+        .as_table_mut()
+        .ok_or(ConfigEditError::MissingCards)?;
+    let uid_hex = uid.to_hex_lowercase();
+
+    if cards.contains_key(&uid_hex) {
+        return Err(ConfigEditError::Duplicate(uid.clone()));
+    }
+
+    cards.insert(&uid_hex, value(track));
+
+    fs::write(path, doc.to_string()).map_err(|source| ConfigEditError::Write {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    Ok(())
+}
+
 fn resolve_track_path(music_dir: &Path, entry: &str) -> PathBuf {
     let path = PathBuf::from(entry);
     if path.is_absolute() || music_dir.as_os_str().is_empty() {
@@ -86,6 +147,8 @@ fn normalize_join(base: &Path, relative: PathBuf) -> PathBuf {
 mod tests {
     use super::*;
     use std::path::Path;
+    use tempfile::tempdir;
+    use toml_edit::DocumentMut;
 
     #[test]
     fn builds_library_from_config() {
@@ -137,5 +200,40 @@ music_dir = "/music"
 
         let err = MusicBoxConfig::from_reader(toml.as_bytes()).unwrap_err();
         assert!(matches!(err, ConfigError::CardUid(_)));
+    }
+
+    #[test]
+    fn add_card_to_config_creates_or_updates_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("musicbox.toml");
+        let uid = CardUid::from_hex("0a0b").unwrap();
+
+        add_card_to_config(&path, &uid, "songs/track.mp3").unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let doc = contents.parse::<DocumentMut>().unwrap();
+        assert_eq!(doc["music_dir"].as_str(), Some(""));
+        assert_eq!(doc["cards"]["0a0b"].as_str(), Some("songs/track.mp3"));
+    }
+
+    #[test]
+    fn add_card_to_config_rejects_duplicate_cards() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("musicbox.toml");
+        std::fs::write(
+            &path,
+            r#"
+music_dir = "/music"
+
+[cards]
+"0c0d" = "other.mp3"
+"#
+            .trim(),
+        )
+        .unwrap();
+
+        let uid = CardUid::from_hex("0c0d").unwrap();
+        let err = add_card_to_config(&path, &uid, "songs/new.mp3").unwrap_err();
+        assert!(matches!(err, ConfigEditError::Duplicate(_)));
     }
 }

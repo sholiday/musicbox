@@ -118,10 +118,7 @@ pub mod pcsc_backend {
             }
 
             let uid_result = {
-                let card = self
-                    .card
-                    .as_ref()
-                    .expect("card present while decoding UID");
+                let card = self.card.as_ref().expect("card present while decoding UID");
                 Self::read_uid(card)
             };
 
