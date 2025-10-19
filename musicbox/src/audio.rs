@@ -70,8 +70,8 @@ mod rodio_backend {
 
         #[test]
         fn load_track_returns_error_for_missing_file() {
-            let err = RodioPlayer::load_track(Path::new("./does-not-exist.ogg")).unwrap_err();
-            assert!(matches!(err, PlayerError::Backend { .. }));
+            let result = RodioPlayer::load_track(Path::new("./does-not-exist.ogg"));
+            assert!(matches!(result, Err(PlayerError::Backend { .. })));
         }
     }
 }
