@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
-pushd "$repo_root/musicbox" >/dev/null
+pushd "$repo_root" >/dev/null
 echo "Verifying cargo build --all-targets --all-features..."
 cargo build --all-targets --all-features
 echo "Running cargo test before commit..."
