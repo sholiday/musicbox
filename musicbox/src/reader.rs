@@ -37,9 +37,7 @@ impl<T: NfcReader + ?Sized> NfcReader for Box<T> {
 #[cfg(feature = "nfc-pcsc")]
 pub mod pcsc_backend {
     use super::{CardUid, NfcReader, ReaderError, ReaderEvent};
-    use pcsc::{
-        Card, Context, Error as PcscError, MAX_ATR_SIZE, Protocols, Scope, ShareMode, State,
-    };
+    use pcsc::{Card, Context, Error as PcscError, Protocols, Scope, ShareMode, Status};
     use std::time::Duration;
 
     pub struct PcscReader {
@@ -66,13 +64,13 @@ pub mod pcsc_backend {
             if readers_buf.is_empty() {
                 return Err(ReaderError::backend("no PC/SC readers available"));
             }
-            let name = readers_buf
+            let reader_name = readers_buf
                 .first()
                 .ok_or_else(|| ReaderError::backend("failed to obtain reader name from PC/SC"))?
-                .as_str();
+                .as_c_str();
             let card = self
                 .context
-                .connect(name, ShareMode::Shared, Protocols::ANY)
+                .connect(reader_name, ShareMode::Shared, Protocols::ANY)
                 .map_err(ReaderError::from)?;
             self.card = Some(card);
             Ok(())
@@ -102,38 +100,43 @@ pub mod pcsc_backend {
                 self.connect_card()?;
             }
 
-            let card = match self.card.as_mut() {
-                Some(card) => card,
-                None => return Ok(None),
+            if self.card.is_none() {
+                return Ok(None);
+            }
+
+            let status = {
+                let card = self
+                    .card
+                    .as_ref()
+                    .expect("card present after successful connect");
+                card.status2_owned().map_err(ReaderError::from)?
             };
 
-            let mut state = State::empty();
-            let mut atr = [0u8; MAX_ATR_SIZE];
-            let mut atr_len = atr.len();
-            card.status(&mut state, None, &mut atr, &mut atr_len)
-                .map_err(ReaderError::from)?;
-
-            if !state.contains(State::PRESENT) {
-                drop(card);
+            if !status.status().contains(Status::PRESENT) {
                 self.card = None;
                 return Ok(None);
             }
 
-            match Self::read_uid(card) {
+            let uid_result = {
+                let card = self
+                    .card
+                    .as_ref()
+                    .expect("card present while decoding UID");
+                Self::read_uid(card)
+            };
+
+            match uid_result {
                 Ok(uid) => Ok(Some(ReaderEvent::CardPresent { uid })),
-                Err(err) => {
+                Err(err)
                     if matches!(
                         err,
-                        ReaderError::Pcsc(PcscError::RemovedCard)
-                            | ReaderError::Pcsc(PcscError::ResetCard)
-                    ) {
-                        drop(card);
-                        self.card = None;
-                        Ok(None)
-                    } else {
-                        Err(err)
-                    }
+                        ReaderError::Pcsc(PcscError::RemovedCard | PcscError::ResetCard)
+                    ) =>
+                {
+                    self.card = None;
+                    Ok(None)
                 }
+                Err(err) => Err(err),
             }
         }
     }

@@ -3,55 +3,49 @@ use crate::controller::{AudioPlayer, PlayerError, Track};
 #[cfg(feature = "audio-rodio")]
 mod rodio_backend {
     use super::*;
-    use rodio::source::Source;
-    use rodio::{OutputStream, OutputStreamHandle, Sink};
-    use std::io::BufReader;
+    use rodio::{OutputStream, OutputStreamBuilder, Sink};
+    use std::fs::File;
     use std::path::Path;
 
     pub struct RodioPlayer {
-        _stream: OutputStream,
-        handle: OutputStreamHandle,
+        stream: OutputStream,
         sink: Sink,
     }
 
     impl RodioPlayer {
         pub fn new() -> Result<Self, PlayerError> {
-            let (stream, handle) =
-                OutputStream::try_default().map_err(|err| PlayerError::Backend {
+            let stream =
+                OutputStreamBuilder::open_default_stream().map_err(|err| PlayerError::Backend {
                     message: format!("failed to open output stream: {err}"),
                 })?;
-            let sink = Sink::try_new(&handle).map_err(|err| PlayerError::Backend {
-                message: format!("failed to create sink: {err}"),
-            })?;
+            let sink = Sink::connect_new(stream.mixer());
             Ok(Self {
-                _stream: stream,
-                handle,
+                stream,
                 sink,
             })
         }
 
-        fn load_track(path: &Path) -> Result<impl Source<Item = f32> + Send, PlayerError> {
-            let file = std::fs::File::open(path).map_err(|err| PlayerError::Backend {
+        fn load_track(
+            path: &Path,
+        ) -> Result<rodio::Decoder<std::io::BufReader<File>>, PlayerError> {
+            let file = File::open(path).map_err(|err| PlayerError::Backend {
                 message: format!("failed to open track {path:?}: {err}"),
             })?;
             let decoder =
-                rodio::Decoder::new(BufReader::new(file)).map_err(|err| PlayerError::Backend {
+                rodio::Decoder::try_from(file).map_err(|err| PlayerError::Backend {
                     message: format!("failed to decode track {path:?}: {err}"),
                 })?;
-            Ok(decoder.convert_samples())
+            Ok(decoder)
         }
 
-        fn reset_sink(&mut self) -> Result<(), PlayerError> {
-            self.sink = Sink::try_new(&self.handle).map_err(|err| PlayerError::Backend {
-                message: format!("failed to reset sink: {err}"),
-            })?;
-            Ok(())
+        fn reset_sink(&mut self) {
+            self.sink = Sink::connect_new(self.stream.mixer());
         }
     }
 
     impl AudioPlayer for RodioPlayer {
         fn play(&mut self, track: &Track) -> Result<(), PlayerError> {
-            self.reset_sink()?;
+            self.reset_sink();
             let source = Self::load_track(track.path())?;
             self.sink.append(source);
             self.sink.play();
@@ -61,7 +55,7 @@ mod rodio_backend {
         fn stop(&mut self) -> Result<(), PlayerError> {
             if !self.sink.empty() {
                 self.sink.stop();
-                self.reset_sink()?;
+                self.reset_sink();
             }
             Ok(())
         }
