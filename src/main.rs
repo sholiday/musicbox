@@ -145,6 +145,7 @@ enum TagError {
     InvalidTrackPath(PathBuf),
 }
 
+/// Parses command-line arguments and calls the appropriate handler.
 fn run() -> Result<(), RunError> {
     let cli = Cli::parse();
 
@@ -190,6 +191,7 @@ fn run() -> Result<(), RunError> {
     Ok(())
 }
 
+/// The main entry point for running the music player.
 fn run_player_main(
     config_path: PathBuf,
     poll_interval_ms: u64,
@@ -260,6 +262,7 @@ fn run_player_main(
     Ok(())
 }
 
+/// Handles the `tag` subcommand.
 fn handle_tag_command(
     command: TagCommand,
     default_reader: ReaderKind,
@@ -270,6 +273,7 @@ fn handle_tag_command(
     }
 }
 
+/// Handles the `tag add` subcommand.
 fn handle_tag_add(
     args: TagAddArgs,
     default_reader: ReaderKind,
@@ -310,12 +314,14 @@ fn handle_tag_add(
     Ok(())
 }
 
+/// Converts a `Path` to a `String`.
 fn path_to_string(path: &Path) -> Result<String, TagError> {
     path.to_str()
         .map(|s| s.to_owned())
         .ok_or_else(|| TagError::InvalidTrackPath(path.to_path_buf()))
 }
 
+/// Waits for a card to be presented to the reader and returns its UID.
 fn acquire_card_uid(reader_kind: ReaderKind, poll: Duration) -> Result<CardUid, TagError> {
     let mut reader = select_reader(reader_kind, poll)?;
     loop {
@@ -327,6 +333,7 @@ fn acquire_card_uid(reader_kind: ReaderKind, poll: Duration) -> Result<CardUid, 
     }
 }
 
+/// Attempts to write the track metadata to the NFC tag.
 fn attempt_tag_write(
     reader_kind: ReaderKind,
     poll: Duration,
@@ -350,12 +357,14 @@ fn attempt_tag_write(
     Ok(())
 }
 
+/// Handles the `manual` subcommand.
 fn handle_manual_command(command: ManualCommand, silent: bool) -> Result<(), RunError> {
     match command {
         ManualCommand::Trigger(args) => handle_manual_trigger(args, silent),
     }
 }
 
+/// Handles the `manual trigger` subcommand.
 fn handle_manual_trigger(args: ManualTriggerArgs, silent: bool) -> Result<(), RunError> {
     let player = if silent {
         PlayerBackend::Noop
