@@ -22,6 +22,9 @@ scripts/build-armv7.sh --release
 # Include optional features when needed
 CARGO_FEATURES="audio-rodio nfc-pcsc" scripts/build-armv7.sh --release
 
+# Trigger playback without an NFC reader (manual test on Pi)
+./bin/musicbox manual trigger --config config/demo.toml deadbeef
+
 # Run with Rodio audio support (requires system audio libs)
 cargo test --features audio-rodio
 
@@ -76,6 +79,8 @@ Keeping these concerns behind feature flags lets us ship one codebase while stil
 - For on-device testing without installing Rust, cross-compile the test harnesses with
   `scripts/build-armv7.sh --tests`, copy the executables from
   `target/armv7-unknown-linux-gnueabihf/debug/deps/` to the Pi, and run them there.
+- Until the NFC reader is connected, invoke the manual trigger subcommand to play tracks straight
+  from the command line: `./bin/musicbox manual trigger --config <path/to/config> <card_uid>`.
 - Pi 2/3, standard 32‑bit Raspberry Pi OS.
 - NFC reader: ACR122U (PC/SC).
 - Audio: Raspberry Pi audio output via Rodio/CPAL (requires ALSA).
