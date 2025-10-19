@@ -3,6 +3,7 @@ use predicates::prelude::*;
 use std::path::Path;
 use std::process::Command;
 
+/// Tests that the CLI runs successfully with the noop reader.
 #[test]
 fn cli_runs_with_noop_reader() {
     let config = Path::new("examples/config.example.toml");
@@ -23,6 +24,7 @@ fn cli_runs_with_noop_reader() {
         .stdout(predicate::str::contains("Reader requested shutdown"));
 }
 
+/// Tests that the CLI falls back to the noop reader when the PC/SC reader is not available.
 #[test]
 fn cli_auto_reader_falls_back_when_pcsc_missing() {
     let config = Path::new("examples/config.example.toml");
