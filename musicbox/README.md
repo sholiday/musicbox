@@ -21,13 +21,31 @@ cargo test
 scripts/build-armv7.sh --release
 # Include optional features when needed
 CARGO_FEATURES="audio-rodio nfc-pcsc" scripts/build-armv7.sh --release
+# Enable the debug HTTP surface while cross-compiling
+CARGO_FEATURES="debug-http" scripts/build-armv7.sh --release
 
 # Trigger playback without an NFC reader (manual test on Pi)
 ./bin/musicbox manual trigger --config config/demo.toml deadbeef
 
 # Launch the optional debug web server (requires `debug-http` feature)
 ./bin/musicbox --debug-http 0.0.0.0:3000 --reader noop --silent config/demo.toml
+```
 
+## Deploy to a Raspberry Pi
+
+```bash
+# Copy the binary and sample config to the Pi (host `carter` shown here)
+scp target/armv7-unknown-linux-gnueabihf/release/musicbox carter:~/musicbox/bin/musicbox
+scp examples/config.example.toml carter:~/musicbox/config/demo.toml
+
+# Start the service with the debug HTTP endpoint exposed
+ssh carter 'cd ~/musicbox && ./bin/musicbox --debug-http 0.0.0.0:3000 --reader noop --silent ./config/demo.toml'
+
+# Confirm the server is reachable (or open http://carter:3000/status in a browser)
+ssh carter 'curl http://127.0.0.1:3000/status'
+```
+
+```bash
 # Run with Rodio audio support (requires system audio libs)
 cargo test --features audio-rodio
 
@@ -39,6 +57,14 @@ cargo test --features "audio-rodio nfc-pcsc"
 
 # Include the optional debug HTTP server
 cargo test --features "audio-rodio nfc-pcsc debug-http"
+```
+
+## Git Hooks
+
+To automatically run the test suite before every commit, point Git at the bundled hooks:
+
+```bash
+git config core.hooksPath .githooks
 ```
 
 ### Binary Usage
