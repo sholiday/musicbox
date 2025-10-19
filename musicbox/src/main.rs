@@ -58,7 +58,7 @@ struct Cli {
     silent: bool,
 
     #[cfg(feature = "debug-http")]
-    #[arg(long, value_name = "ADDR", value_hint = ValueHint::HostnamePort)]
+    #[arg(long, value_name = "ADDR", value_hint = ValueHint::Hostname)]
     debug_http: Option<SocketAddr>,
 
     #[command(subcommand)]

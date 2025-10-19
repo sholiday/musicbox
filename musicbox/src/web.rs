@@ -11,7 +11,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum WebError {
     #[error("failed to build tokio runtime: {0}")]
-    Runtime(#[from] std::io::Error),
+    Runtime(#[source] std::io::Error),
     #[error("failed to bind {addr}: {source}")]
     Bind {
         addr: SocketAddr,
@@ -19,7 +19,7 @@ pub enum WebError {
         source: std::io::Error,
     },
     #[error("server error: {0}")]
-    Server(#[from] axum::Error),
+    Server(#[source] std::io::Error),
 }
 
 pub fn serve(status: SharedStatus, addr: SocketAddr) -> Result<(), WebError> {

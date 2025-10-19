@@ -25,6 +25,9 @@ CARGO_FEATURES="audio-rodio nfc-pcsc" scripts/build-armv7.sh --release
 # Trigger playback without an NFC reader (manual test on Pi)
 ./bin/musicbox manual trigger --config config/demo.toml deadbeef
 
+# Launch the optional debug web server (requires `debug-http` feature)
+./bin/musicbox --debug-http 0.0.0.0:3000 --reader noop --silent config/demo.toml
+
 # Run with Rodio audio support (requires system audio libs)
 cargo test --features audio-rodio
 
