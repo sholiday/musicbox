@@ -42,6 +42,7 @@ pub enum ConfigEditError {
     Duplicate(CardUid),
 }
 
+/// Represents the configuration for the music box.
 #[derive(Debug, Clone)]
 pub struct MusicBoxConfig {
     music_dir: PathBuf,
@@ -93,6 +94,7 @@ impl MusicBoxConfig {
     }
 }
 
+/// Adds a new card to the configuration file.
 pub fn add_card_to_config(path: &Path, uid: &CardUid, track: &str) -> Result<(), ConfigEditError> {
     let mut doc = if path.exists() {
         let contents = fs::read_to_string(path).map_err(|source| ConfigEditError::Read {
@@ -130,6 +132,7 @@ pub fn add_card_to_config(path: &Path, uid: &CardUid, track: &str) -> Result<(),
     Ok(())
 }
 
+/// Resolves the absolute path to a track.
 fn resolve_track_path(music_dir: &Path, entry: &str) -> PathBuf {
     let path = PathBuf::from(entry);
     if path.is_absolute() || music_dir.as_os_str().is_empty() {
