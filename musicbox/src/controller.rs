@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -24,12 +25,31 @@ impl CardUid {
         }
         Ok(Self(bytes))
     }
+
+    pub fn to_hex_lowercase(&self) -> String {
+        let mut hex = String::with_capacity(self.0.len() * 2);
+        for byte in &self.0 {
+            use fmt::Write;
+            write!(&mut hex, "{:02x}", byte).expect("write to string");
+        }
+        hex
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 fn hex_value(c: char) -> Result<u8, CardUidParseError> {
     c.to_digit(16)
         .map(|v| v as u8)
         .ok_or(CardUidParseError::InvalidHex(c))
+}
+
+impl fmt::Display for CardUid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex_lowercase())
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -87,6 +107,9 @@ pub enum PlayerError {
 pub trait AudioPlayer {
     fn play(&mut self, track: &Track) -> Result<(), PlayerError>;
     fn stop(&mut self) -> Result<(), PlayerError>;
+    fn wait_until_done(&mut self) -> Result<(), PlayerError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,6 +250,13 @@ mod tests {
 
     fn uid(bytes: &[u8]) -> CardUid {
         CardUid::new(bytes.to_vec())
+    }
+
+    #[test]
+    fn card_uid_formats_to_lower_hex() {
+        let uid = uid(&[0x0a, 0x1b, 0xff]);
+        assert_eq!(uid.to_hex_lowercase(), "0a1bff");
+        assert_eq!(uid.to_string(), "0a1bff");
     }
 
     #[test]

@@ -1,12 +1,13 @@
-use clap::{Parser, ValueEnum, builder::ValueHint};
+use clap::{Args, Parser, Subcommand, ValueEnum, builder::ValueHint};
 use musicbox::app::{RunLoopError, controller_from_config_path, run_until_shutdown};
 use musicbox::audio::RodioPlayer;
-use musicbox::controller::{AudioPlayer, PlayerError, Track};
+use musicbox::config::{self, ConfigEditError};
+use musicbox::controller::{AudioPlayer, CardUid, CardUidParseError, PlayerError, Track};
 use musicbox::reader::{NfcReader, ReaderError, ReaderEvent};
 use musicbox::telemetry::{self, SharedStatus};
 #[cfg(feature = "debug-http")]
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -27,13 +28,23 @@ enum RunError {
     Loop(#[from] RunLoopError),
     #[error(transparent)]
     Reader(#[from] ReaderError),
+    #[error(transparent)]
+    Tag(#[from] TagError),
+    #[error("configuration path required")]
+    MissingConfig,
 }
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "NFC-triggered music player", long_about = None)]
+#[command(
+    author,
+    version,
+    about = "NFC-triggered music player",
+    long_about = None,
+    subcommand_negates_reqs = true
+)]
 struct Cli {
     #[arg(value_name = "CONFIG", value_hint = ValueHint::FilePath)]
-    config: PathBuf,
+    config: Option<PathBuf>,
 
     #[arg(long, default_value_t = 200, value_name = "MILLIS")]
     poll_interval_ms: u64,
@@ -47,6 +58,50 @@ struct Cli {
     #[cfg(feature = "debug-http")]
     #[arg(long, value_name = "ADDR", value_hint = ValueHint::HostnamePort)]
     debug_http: Option<SocketAddr>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    #[command(subcommand)]
+    Tag(TagCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum TagCommand {
+    Add(TagAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct TagAddArgs {
+    #[arg(long, value_name = "CONFIG", value_hint = ValueHint::FilePath)]
+    config: PathBuf,
+
+    #[arg(long, value_name = "TRACK", value_hint = ValueHint::FilePath)]
+    track: PathBuf,
+
+    #[arg(long, value_name = "UID", help = "Hex-encoded card UID (no spaces)")]
+    card: Option<String>,
+
+    #[arg(
+        long,
+        value_enum,
+        value_name = "KIND",
+        help = "Reader backend override"
+    )]
+    reader: Option<ReaderKind>,
+
+    #[arg(
+        long,
+        value_name = "MILLIS",
+        help = "Override poll interval in milliseconds while waiting for a card"
+    )]
+    poll_interval_ms: Option<u64>,
+
+    #[arg(long, help = "Skip writing metadata to the NFC tag")]
+    skip_tag_write: bool,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -56,10 +111,72 @@ enum ReaderKind {
     Noop,
 }
 
+#[derive(Debug, Error)]
+enum TagError {
+    #[error("card UID must be provided when using the noop reader")]
+    CardUidRequired,
+    #[error("invalid card uid: {0}")]
+    CardUidParse(#[from] CardUidParseError),
+    #[error("reader error: {0}")]
+    Reader(#[from] ReaderError),
+    #[error("reader shut down before a card was detected")]
+    ReaderShutdown,
+    #[error(transparent)]
+    Config(#[from] ConfigEditError),
+    #[error("track path {0:?} is not valid UTF-8")]
+    InvalidTrackPath(PathBuf),
+}
+
 fn run() -> Result<(), RunError> {
     let cli = Cli::parse();
 
-    let player = if cli.silent {
+    #[cfg(feature = "debug-http")]
+    let Cli {
+        config,
+        poll_interval_ms,
+        reader,
+        silent,
+        debug_http,
+        command,
+    } = cli;
+
+    #[cfg(not(feature = "debug-http"))]
+    let Cli {
+        config,
+        poll_interval_ms,
+        reader,
+        silent,
+        command,
+    } = cli;
+
+    match command {
+        Some(Command::Tag(tag_command)) => {
+            handle_tag_command(tag_command, reader, poll_interval_ms)?;
+        }
+        None => {
+            let config_path = config.ok_or(RunError::MissingConfig)?;
+            run_player_main(
+                config_path,
+                poll_interval_ms,
+                reader,
+                silent,
+                #[cfg(feature = "debug-http")]
+                debug_http,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn run_player_main(
+    config_path: PathBuf,
+    poll_interval_ms: u64,
+    reader_kind: ReaderKind,
+    silent: bool,
+    #[cfg(feature = "debug-http")] debug_http: Option<SocketAddr>,
+) -> Result<(), RunError> {
+    let player = if silent {
         PlayerBackend::Noop
     } else {
         match RodioPlayer::new() {
@@ -71,14 +188,14 @@ fn run() -> Result<(), RunError> {
         }
     };
 
-    let mut controller = controller_from_config_path(&cli.config, player)?;
-    let mut reader = select_reader(cli.reader, Duration::from_millis(cli.poll_interval_ms))?;
+    let mut controller = controller_from_config_path(&config_path, player)?;
+    let mut reader = select_reader(reader_kind, Duration::from_millis(poll_interval_ms))?;
 
     let status = SharedStatus::default();
     let idle_status = status.clone();
 
     #[cfg(feature = "debug-http")]
-    if let Some(addr) = cli.debug_http {
+    if let Some(addr) = debug_http {
         let server_status = status.clone();
         std::thread::spawn(move || {
             if let Err(err) = musicbox::web::serve(server_status, addr) {
@@ -87,10 +204,10 @@ fn run() -> Result<(), RunError> {
         });
     }
 
-    println!("Loaded configuration from {}", cli.config.display());
+    println!("Loaded configuration from {}", config_path.display());
     println!("Awaiting NFC interactions (reader not connected in this environment).");
 
-    let sleep_duration = Duration::from_millis(cli.poll_interval_ms);
+    let sleep_duration = Duration::from_millis(poll_interval_ms);
 
     run_until_shutdown(
         &mut controller,
@@ -109,6 +226,96 @@ fn run() -> Result<(), RunError> {
     println!("Reader requested shutdown. Exiting.");
     tracing::info!(snapshot = ?status.snapshot(), "final status");
 
+    Ok(())
+}
+
+fn handle_tag_command(
+    command: TagCommand,
+    default_reader: ReaderKind,
+    default_poll_ms: u64,
+) -> Result<(), TagError> {
+    match command {
+        TagCommand::Add(args) => handle_tag_add(args, default_reader, default_poll_ms),
+    }
+}
+
+fn handle_tag_add(
+    args: TagAddArgs,
+    default_reader: ReaderKind,
+    default_poll_ms: u64,
+) -> Result<(), TagError> {
+    let reader_kind = args.reader.unwrap_or(default_reader);
+    let poll_ms = args.poll_interval_ms.unwrap_or(default_poll_ms);
+
+    if args.card.is_none() && matches!(reader_kind, ReaderKind::Noop) {
+        return Err(TagError::CardUidRequired);
+    }
+
+    let track = path_to_string(&args.track)?;
+
+    let uid = if let Some(card_hex) = args.card {
+        CardUid::from_hex(card_hex.trim())?
+    } else {
+        acquire_card_uid(reader_kind, Duration::from_millis(poll_ms))?
+    };
+
+    config::add_card_to_config(&args.config, &uid, &track)?;
+
+    println!(
+        "Mapped card {} to {} in {}",
+        uid,
+        track,
+        args.config.display()
+    );
+
+    if args.skip_tag_write {
+        println!("Skipping NFC tag write (per --skip-tag-write).");
+    } else if let Err(err) =
+        attempt_tag_write(reader_kind, Duration::from_millis(poll_ms), &uid, &track)
+    {
+        tracing::warn!(?err, "failed to write NFC tag; config still updated");
+    }
+
+    Ok(())
+}
+
+fn path_to_string(path: &Path) -> Result<String, TagError> {
+    path.to_str()
+        .map(|s| s.to_owned())
+        .ok_or_else(|| TagError::InvalidTrackPath(path.to_path_buf()))
+}
+
+fn acquire_card_uid(reader_kind: ReaderKind, poll: Duration) -> Result<CardUid, TagError> {
+    let mut reader = select_reader(reader_kind, poll)?;
+    loop {
+        match reader.next_event()? {
+            ReaderEvent::CardPresent { uid } => return Ok(uid),
+            ReaderEvent::Idle => continue,
+            ReaderEvent::Shutdown => return Err(TagError::ReaderShutdown),
+        }
+    }
+}
+
+fn attempt_tag_write(
+    reader_kind: ReaderKind,
+    poll: Duration,
+    uid: &CardUid,
+    track: &str,
+) -> Result<(), TagError> {
+    let _ = (reader_kind, poll, uid, track);
+    #[cfg(feature = "nfc-pcsc")]
+    {
+        println!(
+            "Writing track metadata to NFC tag {} via PC/SC is not implemented yet.",
+            uid
+        );
+    }
+    #[cfg(not(feature = "nfc-pcsc"))]
+    {
+        println!(
+            "Tag writing unavailable without the `nfc-pcsc` feature; config has still been updated."
+        );
+    }
     Ok(())
 }
 
@@ -155,9 +362,6 @@ fn select_reader(kind: ReaderKind, poll: Duration) -> Result<Box<dyn NfcReader>,
         ReaderKind::Auto => match build_pcsc_reader(poll) {
             Ok(reader) => Ok(reader),
             Err(err) => {
-                // Treat hardware absence as non-fatal. We still want the system
-                // to boot and expose diagnostics even if the USB reader is
-                // unplugged during development or unit testing.
                 tracing::warn!(
                     ?err,
                     "PC/SC reader unavailable; falling back to noop reader"

@@ -59,6 +59,12 @@ mod rodio_backend {
             }
             Ok(())
         }
+
+        fn wait_until_done(&mut self) -> Result<(), PlayerError> {
+            self.sink.sleep_until_end();
+            self.reset_sink();
+            Ok(())
+        }
     }
 
     #[cfg(test)]
