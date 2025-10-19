@@ -24,6 +24,7 @@ pub enum ReaderEvent {
     Shutdown,
 }
 
+/// An interface for reading events from an NFC reader.
 pub trait NfcReader {
     fn next_event(&mut self) -> Result<ReaderEvent, ReaderError>;
 }
@@ -40,6 +41,7 @@ pub mod pcsc_backend {
     use pcsc::{Card, Context, Error as PcscError, Protocols, Scope, ShareMode, Status};
     use std::time::Duration;
 
+    /// A `NfcReader` that uses the `pcsc` crate to communicate with a PC/SC reader.
     pub struct PcscReader {
         context: Context,
         card: Option<Card>,
