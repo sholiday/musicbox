@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+/// The unique identifier of a card.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CardUid(pub Vec<u8>);
 
@@ -60,6 +61,7 @@ pub enum CardUidParseError {
     InvalidHex(char),
 }
 
+/// A music track.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Track {
     pub path: PathBuf,
@@ -75,6 +77,7 @@ impl Track {
     }
 }
 
+/// Holds the mapping from card UIDs to tracks.
 #[derive(Debug, Default, Clone)]
 pub struct Library {
     tracks: HashMap<CardUid, Track>,
@@ -111,6 +114,7 @@ pub enum PlayerError {
     Backend { message: String },
 }
 
+/// An interface for audio playback.
 pub trait AudioPlayer {
     fn play(&mut self, track: &Track) -> Result<(), PlayerError>;
     fn stop(&mut self) -> Result<(), PlayerError>;
@@ -119,6 +123,7 @@ pub trait AudioPlayer {
     }
 }
 
+/// Represents the actions that can be taken by the `MusicBoxController`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControllerAction {
     Started {
@@ -142,6 +147,7 @@ struct ActiveTrack {
     track: Track,
 }
 
+/// The main controller for the music box.
 pub struct MusicBoxController<P: AudioPlayer> {
     library: Library,
     player: P,
