@@ -17,6 +17,7 @@ pub enum AppError {
     Config(#[from] ConfigError),
 }
 
+/// Creates a `MusicBoxController` from a configuration file.
 pub fn controller_from_config_path<P: AudioPlayer>(
     path: impl AsRef<Path>,
     player: P,
@@ -46,6 +47,7 @@ pub enum ProcessOutcome {
     Shutdown,
 }
 
+/// Processes the next event from the NFC reader.
 pub fn process_next_event<R, P>(
     controller: &mut MusicBoxController<P>,
     reader: &mut R,
@@ -65,6 +67,7 @@ where
     }
 }
 
+/// Runs the main event loop until the reader requests a shutdown.
 pub fn run_until_shutdown<R, P, OnAction, OnIdle>(
     controller: Arc<Mutex<MusicBoxController<P>>>,
     reader: &mut R,
