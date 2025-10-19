@@ -85,6 +85,8 @@ enum ManualCommand {
 
 #[derive(Debug, Args)]
 struct ManualTriggerArgs {
+    #[arg(long, value_name = "CONFIG", value_hint = ValueHint::FilePath)]
+    config: PathBuf,
     #[arg(value_name = "UID", help = "Hex-encoded card UID (no spaces)")]
     card: String,
 }
@@ -169,8 +171,7 @@ fn run() -> Result<(), RunError> {
             handle_tag_command(tag_command, reader, poll_interval_ms)?;
         }
         Some(Command::Manual(manual_command)) => {
-            let config_path = config.clone().ok_or(RunError::MissingConfig)?;
-            handle_manual_command(manual_command, config_path, silent)?;
+            handle_manual_command(manual_command, silent)?;
         }
         None => {
             let config_path = config.ok_or(RunError::MissingConfig)?;
@@ -338,11 +339,13 @@ fn attempt_tag_write(
     Ok(())
 }
 
-fn handle_manual_command(
-    command: ManualCommand,
-    config_path: PathBuf,
-    silent: bool,
-) -> Result<(), RunError> {
+fn handle_manual_command(command: ManualCommand, silent: bool) -> Result<(), RunError> {
+    match command {
+        ManualCommand::Trigger(args) => handle_manual_trigger(args, silent),
+    }
+}
+
+fn handle_manual_trigger(args: ManualTriggerArgs, silent: bool) -> Result<(), RunError> {
     let player = if silent {
         PlayerBackend::Noop
     } else {
@@ -355,21 +358,19 @@ fn handle_manual_command(
         }
     };
 
-    let mut controller = controller_from_config_path(&config_path, player)?;
+    let mut controller = controller_from_config_path(&args.config, player)?;
 
-    match command {
-        ManualCommand::Trigger(args) => {
-            let uid = CardUid::from_hex(args.card.trim())
-                .map_err(TagError::CardUidParse)
-                .map_err(RunError::Tag)?;
-            let action = controller
-                .handle_card(&uid)
-                .map_err(RunLoopError::from)
-                .map_err(RunError::Loop)?;
-            println!("Manual trigger produced action: {:?}", action);
-            controller.wait_for_player()?;
-        }
-    }
+    let uid = CardUid::from_hex(args.card.trim())
+        .map_err(TagError::CardUidParse)
+        .map_err(RunError::Tag)?;
+
+    let action = controller
+        .handle_card(&uid)
+        .map_err(RunLoopError::from)
+        .map_err(RunError::Loop)?;
+
+    println!("Manual trigger produced action: {:?}", action);
+    controller.wait_for_player()?;
 
     Ok(())
 }
