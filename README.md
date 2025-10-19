@@ -21,6 +21,9 @@ cargo test
 ./bin/musicbox add --config config/demo.toml --track songs/track.mp3 --card deadbeef
 ./bin/musicbox config/demo.toml add --track songs/track.mp3 --card deadbeef
 
+# On laptops without a reader, omit --card to generate a synthetic UID automatically.
+./bin/musicbox add --config config/demo.toml --track songs/track.mp3 --reader noop
+
 # Cross-compile for Raspberry Pi (armv7)
 scripts/build-armv7.sh --release
 # Include optional features when needed

@@ -9,7 +9,7 @@ use musicbox::telemetry::{self, SharedStatus};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 fn main() {
@@ -134,8 +134,6 @@ enum ReaderKind {
 enum TagError {
     #[error("configuration path required; pass --config <PATH> or provide CONFIG before the command")]
     MissingConfig,
-    #[error("card UID must be provided when using the noop reader")]
-    CardUidRequired,
     #[error("invalid card uid: {0}")]
     CardUidParse(#[from] CardUidParseError),
     #[error("reader error: {0}")]
@@ -304,24 +302,33 @@ fn handle_tag_add(
     let poll_ms = poll_interval_ms.unwrap_or(default_poll_ms);
     let poll_duration = Duration::from_millis(poll_ms);
 
-    if card.is_none() && matches!(reader_kind, ReaderKind::Noop) {
-        return Err(TagError::CardUidRequired);
-    }
-
     let track_str = path_to_string(&track)?;
 
     let mut effective_reader_kind = reader_kind;
+    let mut auto_generated_uid = false;
 
     let uid = if let Some(card_hex) = card {
         CardUid::from_hex(card_hex.trim())?
+    } else if matches!(reader_kind, ReaderKind::Noop) {
+        auto_generated_uid = true;
+        generate_synthetic_card_uid()
     } else {
         let selection = select_reader(reader_kind, poll_duration)?;
         effective_reader_kind = selection.kind();
         if matches!(effective_reader_kind, ReaderKind::Noop) {
-            return Err(TagError::CardUidRequired);
+            auto_generated_uid = true;
+            generate_synthetic_card_uid()
+        } else {
+            acquire_card_uid(selection.into_reader())?
         }
-        acquire_card_uid(selection.into_reader())?
     };
+
+    if auto_generated_uid {
+        println!(
+            "Generated synthetic card UID {} because the selected reader cannot scan cards.",
+            uid
+        );
+    }
 
     config::add_card_to_config(&config_path, &uid, &track_str)?;
 
@@ -351,6 +358,18 @@ fn path_to_string(path: &Path) -> Result<String, TagError> {
     path.to_str()
         .map(|s| s.to_owned())
         .ok_or_else(|| TagError::InvalidTrackPath(path.to_path_buf()))
+}
+
+fn generate_synthetic_card_uid() -> CardUid {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO);
+
+    let mut bytes = Vec::with_capacity(12);
+    bytes.extend_from_slice(&now.as_secs().to_be_bytes());
+    bytes.extend_from_slice(&now.subsec_nanos().to_be_bytes());
+
+    CardUid::new(bytes)
 }
 
 /// Waits for a card to be presented to the reader and returns its UID.
