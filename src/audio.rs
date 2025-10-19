@@ -1,5 +1,8 @@
 use crate::controller::{AudioPlayer, PlayerError, Track};
 
+// An audio backend that uses the `rodio` library for audio playback.
+//
+// This backend is enabled by the `audio-rodio` feature.
 #[cfg(feature = "audio-rodio")]
 mod rodio_backend {
     use super::*;
@@ -13,6 +16,7 @@ mod rodio_backend {
     }
 
     impl RodioPlayer {
+        /// Creates a new `RodioPlayer` and initializes the audio stream and sink.
         pub fn new() -> Result<Self, PlayerError> {
             let stream =
                 OutputStreamBuilder::open_default_stream().map_err(|err| PlayerError::Backend {
@@ -22,6 +26,7 @@ mod rodio_backend {
             Ok(Self { stream, sink })
         }
 
+        /// Loads a track from a file and returns a `rodio` decoder.
         fn load_track(
             path: &Path,
         ) -> Result<rodio::Decoder<std::io::BufReader<File>>, PlayerError> {
@@ -34,12 +39,18 @@ mod rodio_backend {
             Ok(decoder)
         }
 
+        /// Resets the `rodio` sink.
+        ///
+        /// This is useful for clearing the audio buffer.
         fn reset_sink(&mut self) {
             self.sink = Sink::connect_new(self.stream.mixer());
         }
     }
 
     impl AudioPlayer for RodioPlayer {
+        /// Plays the given track.
+        ///
+        /// This replaces the currently playing track, if any.
         fn play(&mut self, track: &Track) -> Result<(), PlayerError> {
             self.reset_sink();
             let source = Self::load_track(track.path())?;
@@ -48,6 +59,7 @@ mod rodio_backend {
             Ok(())
         }
 
+        /// Stops the currently playing track.
         fn stop(&mut self) -> Result<(), PlayerError> {
             if !self.sink.empty() {
                 self.sink.stop();
@@ -56,6 +68,7 @@ mod rodio_backend {
             Ok(())
         }
 
+        /// Waits for the currently playing track to finish.
         fn wait_until_done(&mut self) -> Result<(), PlayerError> {
             self.sink.sleep_until_end();
             self.reset_sink();
@@ -76,6 +89,8 @@ mod rodio_backend {
     }
 }
 
+// A stub implementation of the `rodio` backend that is used when the `audio-rodio`
+// feature is not enabled.
 #[cfg(not(feature = "audio-rodio"))]
 mod rodio_backend {
     use super::*;
