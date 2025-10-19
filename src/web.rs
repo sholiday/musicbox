@@ -331,6 +331,7 @@ impl<P: AudioPlayer + Send + 'static> Clone for DebugState<P> {
     }
 }
 
+/// Starts a Tokio runtime and runs the Axum server.
 pub fn serve<P: AudioPlayer + Send + 'static>(
     state: DebugState<P>,
     addr: SocketAddr,
@@ -352,6 +353,7 @@ pub fn serve<P: AudioPlayer + Send + 'static>(
     })
 }
 
+/// Creates the Axum router and defines the routes.
 fn build_router<P: AudioPlayer + Send + 'static>(state: DebugState<P>) -> Router {
     Router::new()
         .route("/", get(index::<P>))
@@ -363,18 +365,21 @@ fn build_router<P: AudioPlayer + Send + 'static>(state: DebugState<P>) -> Router
         .with_state(state)
 }
 
+/// Serves the HTML for the debug dashboard.
 async fn index<P: AudioPlayer + Send + 'static>(
     State(_): State<DebugState<P>>,
 ) -> Html<&'static str> {
     Html(INDEX_HTML)
 }
 
+/// Returns the current status of the music box controller.
 async fn get_status<P: AudioPlayer + Send + 'static>(
     State(state): State<DebugState<P>>,
 ) -> Json<StatusPayload> {
     Json(build_status(&state))
 }
 
+/// Returns the current music library.
 async fn get_library<P: AudioPlayer + Send + 'static>(
     State(state): State<DebugState<P>>,
 ) -> Json<LibraryResponse> {
@@ -394,6 +399,7 @@ async fn get_library<P: AudioPlayer + Send + 'static>(
     Json(LibraryResponse { entries })
 }
 
+/// Returns the current configuration.
 async fn get_config<P: AudioPlayer + Send + 'static>(
     State(state): State<DebugState<P>>,
 ) -> Result<Json<ConfigResponse>, ApiError> {
@@ -409,6 +415,7 @@ async fn get_config<P: AudioPlayer + Send + 'static>(
     }))
 }
 
+/// Updates the configuration.
 async fn update_config<P: AudioPlayer + Send + 'static>(
     State(state): State<DebugState<P>>,
     Json(request): Json<UpdateConfigRequest>,
@@ -441,6 +448,7 @@ async fn update_config<P: AudioPlayer + Send + 'static>(
     }))
 }
 
+/// Starts playback of a track associated with a card.
 async fn play_card<P: AudioPlayer + Send + 'static>(
     State(state): State<DebugState<P>>,
     Json(request): Json<PlayRequest>,
@@ -461,6 +469,7 @@ async fn play_card<P: AudioPlayer + Send + 'static>(
     }))
 }
 
+/// Pauses the currently playing track.
 async fn pause<P: AudioPlayer + Send + 'static>(
     State(state): State<DebugState<P>>,
 ) -> Result<Json<CommandResponse>, ApiError> {
