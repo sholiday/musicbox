@@ -3,6 +3,7 @@ use crate::controller::{AudioPlayer, ControllerAction, ControllerError, MusicBox
 use crate::reader::{NfcReader, ReaderError, ReaderEvent};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -65,7 +66,7 @@ where
 }
 
 pub fn run_until_shutdown<R, P, OnAction, OnIdle>(
-    controller: &mut MusicBoxController<P>,
+    controller: Arc<Mutex<MusicBoxController<P>>>,
     reader: &mut R,
     mut on_action: OnAction,
     mut on_idle: OnIdle,
@@ -77,10 +78,16 @@ where
     OnIdle: FnMut(),
 {
     loop {
-        match process_next_event(controller, reader)? {
-            ProcessOutcome::Action(action) => on_action(&action),
-            ProcessOutcome::NoEvent => on_idle(),
-            ProcessOutcome::Shutdown => break,
+        match reader.next_event()? {
+            ReaderEvent::CardPresent { uid } => {
+                let action = {
+                    let mut guard = controller.lock().expect("controller lock");
+                    guard.handle_card(&uid)
+                }?;
+                on_action(&action);
+            }
+            ReaderEvent::Idle => on_idle(),
+            ReaderEvent::Shutdown => break,
         }
     }
     Ok(())
@@ -97,6 +104,7 @@ mod tests {
     use std::collections::{HashMap, VecDeque};
     use std::path::PathBuf;
     use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
     use tempfile::NamedTempFile;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,10 +317,11 @@ music_dir = "/music"
     #[test]
     fn run_until_shutdown_invokes_callbacks_until_shutdown() {
         let player = MockPlayer::new();
-        let mut controller = controller_with_tracks(
+        let controller = controller_with_tracks(
             vec![("0102", "/music/song1.mp3"), ("0304", "/music/song2.mp3")],
             player.clone(),
         );
+        let controller = Arc::new(Mutex::new(controller));
         let mut reader = ScriptedReader::from_events(vec![
             ReaderEvent::CardPresent {
                 uid: CardUid::from_hex("0102").unwrap(),
@@ -327,7 +336,7 @@ music_dir = "/music"
         let mut actions = Vec::new();
         let mut idle_calls = 0usize;
         run_until_shutdown(
-            &mut controller,
+            controller.clone(),
             &mut reader,
             |action| actions.push(action.clone()),
             || idle_calls += 1,

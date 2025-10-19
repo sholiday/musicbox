@@ -88,6 +88,13 @@ impl Library {
     pub fn lookup(&self, uid: &CardUid) -> Option<&Track> {
         self.tracks.get(uid)
     }
+
+    pub fn entries(&self) -> Vec<(CardUid, Track)> {
+        self.tracks
+            .iter()
+            .map(|(uid, track)| (uid.clone(), track.clone()))
+            .collect()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -200,6 +207,34 @@ impl<P: AudioPlayer> MusicBoxController<P> {
         };
 
         Ok(action)
+    }
+
+    pub fn pause_playback(&mut self) -> Result<Option<ControllerAction>, ControllerError> {
+        if let Some(active) = &self.active {
+            let action = ControllerAction::Stopped {
+                card: active.card.clone(),
+                track: active.track.clone(),
+            };
+            self.player.stop()?;
+            self.active = None;
+            Ok(Some(action))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn active(&self) -> Option<(CardUid, Track)> {
+        self.active
+            .as_ref()
+            .map(|current| (current.card.clone(), current.track.clone()))
+    }
+
+    pub fn replace_library(&mut self, library: Library) {
+        self.library = library;
+    }
+
+    pub fn library_entries(&self) -> Vec<(CardUid, Track)> {
+        self.library.entries()
     }
 }
 
@@ -362,5 +397,67 @@ mod tests {
 
         assert!(matches!(err, ControllerError::TrackNotFound));
         assert!(player.calls().is_empty());
+    }
+
+    #[test]
+    fn pause_playback_stops_active_track() {
+        let player = MockPlayer::new();
+        let library = library_with(vec![(uid(&[1, 2]), "song1.mp3")]);
+        let mut controller = MusicBoxController::new(library, player.clone());
+
+        controller.handle_card(&uid(&[1, 2])).unwrap();
+        let result = controller.pause_playback().unwrap();
+
+        assert_eq!(
+            result,
+            Some(ControllerAction::Stopped {
+                card: uid(&[1, 2]),
+                track: Track::new(PathBuf::from("song1.mp3")),
+            })
+        );
+        assert_eq!(
+            player.calls(),
+            vec![Call::Play(PathBuf::from("song1.mp3")), Call::Stop]
+        );
+        assert!(controller.active().is_none());
+    }
+
+    #[test]
+    fn pause_playback_noops_when_idle() {
+        let player = MockPlayer::new();
+        let library = library_with(vec![(uid(&[1, 2]), "song1.mp3")]);
+        let mut controller = MusicBoxController::new(library, player.clone());
+
+        let result = controller.pause_playback().unwrap();
+
+        assert!(result.is_none());
+        assert!(player.calls().is_empty());
+    }
+
+    #[test]
+    fn library_entries_and_active_report_state() {
+        let player = MockPlayer::new();
+        let library = library_with(vec![
+            (uid(&[1, 2]), "song1.mp3"),
+            (uid(&[3, 4]), "song2.mp3"),
+        ]);
+        let mut controller = MusicBoxController::new(library, player.clone());
+
+        controller.handle_card(&uid(&[1, 2])).unwrap();
+
+        let active = controller.active().unwrap();
+        assert_eq!(active.0, uid(&[1, 2]));
+        assert_eq!(active.1, Track::new(PathBuf::from("song1.mp3")));
+
+        let mut entries = controller.library_entries();
+        entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+
+        assert_eq!(
+            entries,
+            vec![
+                (uid(&[1, 2]), Track::new(PathBuf::from("song1.mp3"))),
+                (uid(&[3, 4]), Track::new(PathBuf::from("song2.mp3"))),
+            ]
+        );
     }
 }

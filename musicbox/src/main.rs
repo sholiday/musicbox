@@ -8,6 +8,7 @@ use musicbox::telemetry::{self, SharedStatus};
 #[cfg(feature = "debug-http")]
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -208,7 +209,10 @@ fn run_player_main(
         }
     };
 
-    let mut controller = controller_from_config_path(&config_path, player)?;
+    let controller = Arc::new(Mutex::new(controller_from_config_path(
+        &config_path,
+        player,
+    )?));
     let mut reader = select_reader(reader_kind, Duration::from_millis(poll_interval_ms))?;
 
     let status = SharedStatus::default();
@@ -217,8 +221,15 @@ fn run_player_main(
     #[cfg(feature = "debug-http")]
     if let Some(addr) = debug_http {
         let server_status = status.clone();
+        let server_controller = controller.clone();
+        let server_config = config_path.clone();
         std::thread::spawn(move || {
-            if let Err(err) = musicbox::web::serve(server_status, addr) {
+            let state = musicbox::web::DebugState {
+                status: server_status,
+                controller: server_controller,
+                config_path: server_config,
+            };
+            if let Err(err) = musicbox::web::serve(state, addr) {
                 tracing::error!(?err, "debug server terminated");
             }
         });
@@ -230,7 +241,7 @@ fn run_player_main(
     let sleep_duration = Duration::from_millis(poll_interval_ms);
 
     run_until_shutdown(
-        &mut controller,
+        controller.clone(),
         &mut reader,
         |action| {
             println!("Controller action: {:?}", action);
