@@ -17,6 +17,10 @@ This project is an NFC‑triggered music player aimed at running on a Raspberry 
 # Run tests (default features only; no audio/NFC backends required)
 cargo test
 
+# Map a new card to a track (use either explicit --config or positional CONFIG)
+./bin/musicbox add --config config/demo.toml --track songs/track.mp3 --card deadbeef
+./bin/musicbox config/demo.toml add --track songs/track.mp3 --card deadbeef
+
 # Cross-compile for Raspberry Pi (armv7)
 scripts/build-armv7.sh --release
 # Include optional features when needed

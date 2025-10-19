@@ -72,6 +72,7 @@ enum Command {
     Tag(TagCommand),
     #[command(subcommand)]
     Manual(ManualCommand),
+    Add(TagAddArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -95,7 +96,7 @@ struct ManualTriggerArgs {
 #[derive(Debug, Args)]
 struct TagAddArgs {
     #[arg(long, value_name = "CONFIG", value_hint = ValueHint::FilePath)]
-    config: PathBuf,
+    config: Option<PathBuf>,
 
     #[arg(long, value_name = "TRACK", value_hint = ValueHint::FilePath)]
     track: PathBuf,
@@ -131,6 +132,8 @@ enum ReaderKind {
 
 #[derive(Debug, Error)]
 enum TagError {
+    #[error("configuration path required; pass --config <PATH> or provide CONFIG before the command")]
+    MissingConfig,
     #[error("card UID must be provided when using the noop reader")]
     CardUidRequired,
     #[error("invalid card uid: {0}")]
@@ -170,10 +173,13 @@ fn run() -> Result<(), RunError> {
 
     match command {
         Some(Command::Tag(tag_command)) => {
-            handle_tag_command(tag_command, reader, poll_interval_ms)?;
+            handle_tag_command(tag_command, config.clone(), reader, poll_interval_ms)?;
         }
         Some(Command::Manual(manual_command)) => {
             handle_manual_command(manual_command, silent)?;
+        }
+        Some(Command::Add(args)) => {
+            handle_tag_add(args, config.clone(), reader, poll_interval_ms)?;
         }
         None => {
             let config_path = config.ok_or(RunError::MissingConfig)?;
@@ -215,7 +221,8 @@ fn run_player_main(
         &config_path,
         player,
     )?));
-    let mut reader = select_reader(reader_kind, Duration::from_millis(poll_interval_ms))?;
+    let poll_duration = Duration::from_millis(poll_interval_ms);
+    let mut reader = select_reader(reader_kind, poll_duration)?.into_reader();
 
     let status = SharedStatus::default();
     let idle_status = status.clone();
@@ -265,49 +272,74 @@ fn run_player_main(
 /// Handles the `tag` subcommand.
 fn handle_tag_command(
     command: TagCommand,
+    inherited_config: Option<PathBuf>,
     default_reader: ReaderKind,
     default_poll_ms: u64,
 ) -> Result<(), TagError> {
     match command {
-        TagCommand::Add(args) => handle_tag_add(args, default_reader, default_poll_ms),
+        TagCommand::Add(args) => {
+            handle_tag_add(args, inherited_config, default_reader, default_poll_ms)
+        }
     }
 }
 
 /// Handles the `tag add` subcommand.
 fn handle_tag_add(
     args: TagAddArgs,
+    inherited_config: Option<PathBuf>,
     default_reader: ReaderKind,
     default_poll_ms: u64,
 ) -> Result<(), TagError> {
-    let reader_kind = args.reader.unwrap_or(default_reader);
-    let poll_ms = args.poll_interval_ms.unwrap_or(default_poll_ms);
+    let TagAddArgs {
+        config,
+        track,
+        card,
+        reader,
+        poll_interval_ms,
+        skip_tag_write,
+    } = args;
 
-    if args.card.is_none() && matches!(reader_kind, ReaderKind::Noop) {
+    let config_path = config.or(inherited_config).ok_or(TagError::MissingConfig)?;
+    let reader_kind = reader.unwrap_or(default_reader);
+    let poll_ms = poll_interval_ms.unwrap_or(default_poll_ms);
+    let poll_duration = Duration::from_millis(poll_ms);
+
+    if card.is_none() && matches!(reader_kind, ReaderKind::Noop) {
         return Err(TagError::CardUidRequired);
     }
 
-    let track = path_to_string(&args.track)?;
+    let track_str = path_to_string(&track)?;
 
-    let uid = if let Some(card_hex) = args.card {
+    let mut effective_reader_kind = reader_kind;
+
+    let uid = if let Some(card_hex) = card {
         CardUid::from_hex(card_hex.trim())?
     } else {
-        acquire_card_uid(reader_kind, Duration::from_millis(poll_ms))?
+        let selection = select_reader(reader_kind, poll_duration)?;
+        effective_reader_kind = selection.kind();
+        if matches!(effective_reader_kind, ReaderKind::Noop) {
+            return Err(TagError::CardUidRequired);
+        }
+        acquire_card_uid(selection.into_reader())?
     };
 
-    config::add_card_to_config(&args.config, &uid, &track)?;
+    config::add_card_to_config(&config_path, &uid, &track_str)?;
 
     println!(
         "Mapped card {} to {} in {}",
         uid,
-        track,
-        args.config.display()
+        track_str,
+        config_path.display()
     );
 
-    if args.skip_tag_write {
+    if skip_tag_write {
         println!("Skipping NFC tag write (per --skip-tag-write).");
-    } else if let Err(err) =
-        attempt_tag_write(reader_kind, Duration::from_millis(poll_ms), &uid, &track)
-    {
+    } else if let Err(err) = attempt_tag_write(
+        effective_reader_kind,
+        poll_duration,
+        &uid,
+        &track_str,
+    ) {
         tracing::warn!(?err, "failed to write NFC tag; config still updated");
     }
 
@@ -322,8 +354,7 @@ fn path_to_string(path: &Path) -> Result<String, TagError> {
 }
 
 /// Waits for a card to be presented to the reader and returns its UID.
-fn acquire_card_uid(reader_kind: ReaderKind, poll: Duration) -> Result<CardUid, TagError> {
-    let mut reader = select_reader(reader_kind, poll)?;
+fn acquire_card_uid(mut reader: Box<dyn NfcReader>) -> Result<CardUid, TagError> {
     loop {
         match reader.next_event()? {
             ReaderEvent::CardPresent { uid } => return Ok(uid),
@@ -456,18 +487,44 @@ impl NfcReader for NoopReader {
     }
 }
 
-fn select_reader(kind: ReaderKind, poll: Duration) -> Result<Box<dyn NfcReader>, ReaderError> {
+struct ReaderSelection {
+    reader: Option<Box<dyn NfcReader>>,
+    effective_kind: ReaderKind,
+}
+
+impl ReaderSelection {
+    fn new(effective_kind: ReaderKind, reader: Box<dyn NfcReader>) -> Self {
+        Self {
+            reader: Some(reader),
+            effective_kind,
+        }
+    }
+
+    fn noop() -> Self {
+        Self::new(ReaderKind::Noop, Box::new(NoopReader::default()))
+    }
+
+    fn into_reader(self) -> Box<dyn NfcReader> {
+        self.reader.expect("reader already taken")
+    }
+
+    fn kind(&self) -> ReaderKind {
+        self.effective_kind
+    }
+}
+
+fn select_reader(kind: ReaderKind, poll: Duration) -> Result<ReaderSelection, ReaderError> {
     match kind {
-        ReaderKind::Noop => Ok(Box::new(NoopReader::default())),
-        ReaderKind::Pcsc => build_pcsc_reader(poll),
+        ReaderKind::Noop => Ok(ReaderSelection::noop()),
+        ReaderKind::Pcsc => build_pcsc_reader(poll).map(|reader| ReaderSelection::new(ReaderKind::Pcsc, reader)),
         ReaderKind::Auto => match build_pcsc_reader(poll) {
-            Ok(reader) => Ok(reader),
+            Ok(reader) => Ok(ReaderSelection::new(ReaderKind::Pcsc, reader)),
             Err(err) => {
                 tracing::warn!(
                     ?err,
                     "PC/SC reader unavailable; falling back to noop reader"
                 );
-                Ok(Box::new(NoopReader::default()))
+                Ok(ReaderSelection::noop())
             }
         },
     }
@@ -496,8 +553,8 @@ mod tests {
         unsafe {
             std::env::set_var("MUSICBOX_NOOP_SHUTDOWN", "1");
         }
-        let reader = select_reader(ReaderKind::Noop, Duration::from_millis(1)).unwrap();
-        let mut reader = reader;
+        let selection = select_reader(ReaderKind::Noop, Duration::from_millis(1)).unwrap();
+        let mut reader = selection.into_reader();
         let event = reader.next_event().unwrap();
         assert!(matches!(event, ReaderEvent::Shutdown));
         unsafe {
