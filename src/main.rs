@@ -172,6 +172,15 @@ struct WaveshareDisplayArgs {
         help = "GPIO pin wired to the display RESET line"
     )]
     reset_pin: u64,
+
+    #[arg(
+        long = "waveshare-gpio-chip",
+        value_name = "PATH",
+        default_value = "/dev/gpiochip0",
+        value_hint = ValueHint::FilePath,
+        help = "GPIO character device path providing the configured pins"
+    )]
+    gpio_chip_path: String,
 }
 
 #[cfg(feature = "waveshare-display")]
@@ -185,6 +194,7 @@ fn waveshare_config_from_args(args: &WaveshareDisplayArgs) -> Option<WaveshareCo
     config.busy_pin = args.busy_pin;
     config.dc_pin = args.dc_pin;
     config.reset_pin = args.reset_pin;
+    config.gpio_chip_path = args.gpio_chip_path.clone();
     Some(config)
 }
 

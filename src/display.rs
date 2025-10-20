@@ -107,17 +107,18 @@ pub mod waveshare {
         epd2in13_v2::{Display2in13, Epd2in13},
         prelude::{Color, DisplayRotation, WaveshareDisplay as EpdDriver},
     };
+    use gpio_cdev::{Chip, LineRequestFlags};
     use linux_embedded_hal::{
-        Delay, SpidevDevice,
+        CdevPin, Delay, SpidevDevice,
         spidev::{SpiModeFlags, Spidev, SpidevOptions},
-        sysfs_gpio,
     };
-    use std::{io, path::Path, thread, time::Duration};
+    use std::{io, path::Path};
     use thiserror::Error;
 
-    type BusyPin = linux_embedded_hal::SysfsPin;
-    type DcPin = linux_embedded_hal::SysfsPin;
-    type RstPin = linux_embedded_hal::SysfsPin;
+    type BusyPin = CdevPin;
+    type DcPin = CdevPin;
+    type RstPin = CdevPin;
+    const GPIO_CONSUMER_TAG: &str = "musicbox-waveshare";
 
     fn open_spi(path: &Path, speed_hz: u32) -> Result<SpidevDevice, io::Error> {
         let mut spi = Spidev::open(path)?;
@@ -130,32 +131,28 @@ pub mod waveshare {
         Ok(SpidevDevice(spi))
     }
 
-    fn prepare_input_pin(pin: &sysfs_gpio::Pin) -> Result<(), sysfs_gpio::Error> {
-        if !pin.is_exported() {
-            pin.export()?;
-            wait_for_export(pin);
-        }
-        pin.set_direction(sysfs_gpio::Direction::In)?;
-        Ok(())
+    fn to_line_offset(pin: u64) -> Result<u32, WaveshareError> {
+        u32::try_from(pin).map_err(|_| WaveshareError::PinOutOfRange(pin))
     }
 
-    fn prepare_output_pin(pin: &sysfs_gpio::Pin, initial: u8) -> Result<(), sysfs_gpio::Error> {
-        if !pin.is_exported() {
-            pin.export()?;
-            wait_for_export(pin);
-        }
-        pin.set_direction(sysfs_gpio::Direction::Out)?;
-        pin.set_value(initial)?;
-        Ok(())
+    fn request_input_pin(
+        chip: &mut Chip,
+        offset: u32,
+    ) -> Result<CdevPin, gpio_cdev::errors::Error> {
+        let line = chip.get_line(offset)?;
+        let handle = line.request(LineRequestFlags::INPUT, 0, GPIO_CONSUMER_TAG)?;
+        CdevPin::new(handle)
     }
 
-    fn wait_for_export(pin: &linux_embedded_hal::sysfs_gpio::Pin) {
-        for _ in 0..5 {
-            if pin.is_exported() {
-                break;
-            }
-            thread::sleep(Duration::from_millis(5));
-        }
+    fn request_output_pin(
+        chip: &mut Chip,
+        offset: u32,
+        initial_high: bool,
+    ) -> Result<CdevPin, gpio_cdev::errors::Error> {
+        let line = chip.get_line(offset)?;
+        let initial_value = if initial_high { 1 } else { 0 };
+        let handle = line.request(LineRequestFlags::OUTPUT, initial_value, GPIO_CONSUMER_TAG)?;
+        CdevPin::new(handle)
     }
 
     /// Configuration for the Waveshare E-Ink HAT wiring and SPI bus.
@@ -167,6 +164,7 @@ pub mod waveshare {
         pub reset_pin: u64,
         pub spi_speed_hz: u32,
         pub rotation: DisplayRotation,
+        pub gpio_chip_path: String,
     }
 
     impl Default for WaveshareConfig {
@@ -178,6 +176,7 @@ pub mod waveshare {
                 reset_pin: 17,
                 spi_speed_hz: 8_000_000,
                 rotation: DisplayRotation::Rotate270,
+                gpio_chip_path: "/dev/gpiochip0".to_string(),
             }
         }
     }
@@ -188,7 +187,9 @@ pub mod waveshare {
         #[error("SPI error: {0}")]
         Spi(#[from] io::Error),
         #[error("GPIO error: {0}")]
-        Gpio(#[from] sysfs_gpio::Error),
+        Gpio(#[from] gpio_cdev::errors::Error),
+        #[error("GPIO pin {0} is out of range for this platform")]
+        PinOutOfRange(u64),
         #[error("display driver error: {0}")]
         Driver(String),
     }
@@ -213,13 +214,17 @@ pub mod waveshare {
 
             let mut spi = open_spi(spi_path, config.spi_speed_hz)?;
 
-            let busy = BusyPin::new(config.busy_pin);
-            let dc = DcPin::new(config.dc_pin);
-            let rst = RstPin::new(config.reset_pin);
+            let mut chip =
+                Chip::new(Path::new(&config.gpio_chip_path)).map_err(WaveshareError::Gpio)?;
+            let busy_offset = to_line_offset(config.busy_pin)?;
+            let dc_offset = to_line_offset(config.dc_pin)?;
+            let rst_offset = to_line_offset(config.reset_pin)?;
 
-            prepare_input_pin(&busy)?;
-            prepare_output_pin(&dc, 0)?;
-            prepare_output_pin(&rst, 1)?;
+            let busy = request_input_pin(&mut chip, busy_offset).map_err(WaveshareError::Gpio)?;
+            let dc =
+                request_output_pin(&mut chip, dc_offset, false).map_err(WaveshareError::Gpio)?;
+            let rst =
+                request_output_pin(&mut chip, rst_offset, true).map_err(WaveshareError::Gpio)?;
 
             let mut delay = Delay;
             let mut epd = Epd2in13::new(&mut spi, busy, dc, rst, &mut delay, None)

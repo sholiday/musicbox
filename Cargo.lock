@@ -883,6 +883,7 @@ dependencies = [
  "clap",
  "embedded-graphics",
  "epd-waveshare",
+ "gpio-cdev",
  "linux-embedded-hal",
  "pcsc",
  "predicates",
