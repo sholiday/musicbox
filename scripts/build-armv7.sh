@@ -12,4 +12,11 @@ export PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig
 export PKG_CONFIG_SYSROOT_DIR=/usr/arm-linux-gnueabihf
 
 cd "$REPO_ROOT"
-cargo build --target "$TARGET" ${CARGO_FEATURES:+--features "$CARGO_FEATURES"} "$@"
+FEATURE_ARGS=()
+if [[ -n "$CARGO_FEATURES" ]]; then
+  FEATURE_ARGS=(--features "$CARGO_FEATURES")
+else
+  FEATURE_ARGS=(--all-features)
+fi
+
+cargo build --target "$TARGET" "${FEATURE_ARGS[@]}" "$@"

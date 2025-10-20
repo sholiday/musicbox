@@ -4,10 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = []
+default = ["debug-http", "waveshare-display"]
 audio-rodio = ["dep:rodio"]
 nfc-pcsc = ["dep:pcsc"]
 debug-http = ["dep:axum", "dep:tokio"]
+waveshare-display = [
+    "dep:epd-waveshare",
+    "dep:embedded-graphics",
+    "dep:linux-embedded-hal",
+]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -22,6 +27,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 axum = { version = "0.7", optional = true, features = ["json"] }
 tokio = { version = "1.40", optional = true, features = ["rt-multi-thread", "macros"] }
+epd-waveshare = { version = "0.6", optional = true }
+embedded-graphics = { version = "0.8", optional = true }
+linux-embedded-hal = { version = "0.4", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2.0"

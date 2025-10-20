@@ -3,6 +3,10 @@ use musicbox::app::{RunLoopError, controller_from_config_path, run_until_shutdow
 use musicbox::audio::RodioPlayer;
 use musicbox::config::{self, ConfigEditError};
 use musicbox::controller::{AudioPlayer, CardUid, CardUidParseError, PlayerError, Track};
+#[cfg(feature = "waveshare-display")]
+use musicbox::display;
+#[cfg(feature = "waveshare-display")]
+use musicbox::display::waveshare::{WaveshareConfig, WaveshareDisplay};
 use musicbox::reader::{NfcReader, ReaderError, ReaderEvent};
 use musicbox::telemetry::{self, SharedStatus};
 #[cfg(feature = "debug-http")]
@@ -11,6 +15,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+
+#[cfg(feature = "waveshare-display")]
+type SharedStatusDisplay = Arc<Mutex<Box<dyn display::StatusDisplay>>>;
 
 fn main() {
     telemetry::init_logging();
@@ -57,6 +64,10 @@ struct Cli {
 
     #[arg(long, help = "Disable audio playback (use silent mode)")]
     silent: bool,
+
+    #[cfg(feature = "waveshare-display")]
+    #[command(flatten)]
+    waveshare: WaveshareDisplayArgs,
 
     #[cfg(feature = "debug-http")]
     #[arg(long, value_name = "ADDR", value_hint = ValueHint::Hostname)]
@@ -123,6 +134,60 @@ struct TagAddArgs {
     skip_tag_write: bool,
 }
 
+#[cfg(feature = "waveshare-display")]
+#[derive(Debug, Args, Clone)]
+struct WaveshareDisplayArgs {
+    #[arg(long, help = "Enable status updates on a Waveshare e-ink Pi HAT")]
+    waveshare_display: bool,
+
+    #[arg(
+        long = "waveshare-spi",
+        value_name = "PATH",
+        default_value = "/dev/spidev0.0",
+        value_hint = ValueHint::FilePath,
+        help = "SPI device path for the display"
+    )]
+    spi_path: String,
+
+    #[arg(
+        long = "waveshare-busy-pin",
+        value_name = "PIN",
+        default_value_t = 24,
+        help = "GPIO pin wired to the display BUSY line"
+    )]
+    busy_pin: u64,
+
+    #[arg(
+        long = "waveshare-dc-pin",
+        value_name = "PIN",
+        default_value_t = 25,
+        help = "GPIO pin wired to the display D/C line"
+    )]
+    dc_pin: u64,
+
+    #[arg(
+        long = "waveshare-reset-pin",
+        value_name = "PIN",
+        default_value_t = 17,
+        help = "GPIO pin wired to the display RESET line"
+    )]
+    reset_pin: u64,
+}
+
+#[cfg(feature = "waveshare-display")]
+fn waveshare_config_from_args(args: &WaveshareDisplayArgs) -> Option<WaveshareConfig> {
+    if !args.waveshare_display {
+        return None;
+    }
+
+    let mut config = WaveshareConfig::default();
+    config.spi_path = args.spi_path.clone();
+    config.busy_pin = args.busy_pin;
+    config.dc_pin = args.dc_pin;
+    config.reset_pin = args.reset_pin;
+    Some(config)
+}
+
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum ReaderKind {
     Auto,
@@ -132,7 +197,9 @@ enum ReaderKind {
 
 #[derive(Debug, Error)]
 enum TagError {
-    #[error("configuration path required; pass --config <PATH> or provide CONFIG before the command")]
+    #[error(
+        "configuration path required; pass --config <PATH> or provide CONFIG before the command"
+    )]
     MissingConfig,
     #[error("invalid card uid: {0}")]
     CardUidParse(#[from] CardUidParseError),
@@ -150,22 +217,15 @@ enum TagError {
 fn run() -> Result<(), RunError> {
     let cli = Cli::parse();
 
-    #[cfg(feature = "debug-http")]
     let Cli {
         config,
         poll_interval_ms,
         reader,
         silent,
+        #[cfg(feature = "waveshare-display")]
+        waveshare,
+        #[cfg(feature = "debug-http")]
         debug_http,
-        command,
-    } = cli;
-
-    #[cfg(not(feature = "debug-http"))]
-    let Cli {
-        config,
-        poll_interval_ms,
-        reader,
-        silent,
         command,
     } = cli;
 
@@ -181,11 +241,15 @@ fn run() -> Result<(), RunError> {
         }
         None => {
             let config_path = config.ok_or(RunError::MissingConfig)?;
+            #[cfg(feature = "waveshare-display")]
+            let waveshare_config = waveshare_config_from_args(&waveshare);
             run_player_main(
                 config_path,
                 poll_interval_ms,
                 reader,
                 silent,
+                #[cfg(feature = "waveshare-display")]
+                waveshare_config,
                 #[cfg(feature = "debug-http")]
                 debug_http,
             )?;
@@ -201,6 +265,7 @@ fn run_player_main(
     poll_interval_ms: u64,
     reader_kind: ReaderKind,
     silent: bool,
+    #[cfg(feature = "waveshare-display")] waveshare_config: Option<WaveshareConfig>,
     #[cfg(feature = "debug-http")] debug_http: Option<SocketAddr>,
 ) -> Result<(), RunError> {
     let player = if silent {
@@ -223,7 +288,8 @@ fn run_player_main(
     let mut reader = select_reader(reader_kind, poll_duration)?.into_reader();
 
     let status = SharedStatus::default();
-    let idle_status = status.clone();
+    let action_status_state = status.clone();
+    let idle_status_state = status.clone();
 
     #[cfg(feature = "debug-http")]
     if let Some(addr) = debug_http {
@@ -242,24 +308,117 @@ fn run_player_main(
         });
     }
 
+    #[cfg(feature = "waveshare-display")]
+    let display: Option<SharedStatusDisplay> =
+        waveshare_config.and_then(|config| match WaveshareDisplay::new(config) {
+            Ok(device) => {
+                println!("Waveshare display connected; status updates enabled.");
+                Some(Arc::new(Mutex::new(
+                    Box::new(device) as Box<dyn display::StatusDisplay>
+                )))
+            }
+            Err(err) => {
+                eprintln!("Failed to initialize Waveshare display: {err}");
+                tracing::warn!(?err, "waveshare display initialization failed");
+                None
+            }
+        });
+
+    #[cfg(feature = "waveshare-display")]
+    if let Some(handle) = &display {
+        match handle.lock() {
+            Ok(mut device) => {
+                if let Err(err) = device.update(&status.snapshot()) {
+                    tracing::warn!(?err, "initial waveshare display update failed");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(?err, "waveshare display mutex poisoned during init");
+            }
+        }
+    }
+
     println!("Loaded configuration from {}", config_path.display());
     println!("Awaiting NFC interactions (reader not connected in this environment).");
 
     let sleep_duration = Duration::from_millis(poll_interval_ms);
 
+    #[cfg(feature = "waveshare-display")]
+    let display_for_actions = display.clone();
+    #[cfg(feature = "waveshare-display")]
+    let display_for_idle = display.clone();
+
     run_until_shutdown(
         controller.clone(),
         &mut reader,
-        |action| {
-            println!("Controller action: {:?}", action);
-            status.record_action(action.clone());
-            tracing::info!(?action, "controller action");
+        {
+            #[cfg(feature = "waveshare-display")]
+            let display_for_actions = display_for_actions;
+            let action_status = action_status_state;
+            move |action| {
+                println!("Controller action: {:?}", action);
+                action_status.record_action(action.clone());
+                tracing::info!(?action, "controller action");
+                #[cfg(feature = "waveshare-display")]
+                {
+                    if let Some(handle) = &display_for_actions {
+                        let snapshot = action_status.snapshot();
+                        match handle.lock() {
+                            Ok(mut device) => {
+                                if let Err(err) = device.update(&snapshot) {
+                                    tracing::warn!(?err, "waveshare display update failed");
+                                }
+                            }
+                            Err(err) => {
+                                tracing::warn!(?err, "waveshare display mutex poisoned");
+                            }
+                        }
+                    }
+                }
+            }
         },
-        || {
-            idle_status.record_idle();
-            std::thread::sleep(sleep_duration);
+        {
+            #[cfg(feature = "waveshare-display")]
+            let display_for_idle = display_for_idle;
+            let idle_status = idle_status_state;
+            move || {
+                idle_status.record_idle();
+                #[cfg(feature = "waveshare-display")]
+                {
+                    if let Some(handle) = &display_for_idle {
+                        let snapshot = idle_status.snapshot();
+                        if snapshot.idle_events % 100 == 0 {
+                            match handle.lock() {
+                                Ok(mut device) => {
+                                    if let Err(err) = device.update(&snapshot) {
+                                        tracing::warn!(?err, "waveshare display update failed");
+                                    }
+                                }
+                                Err(err) => {
+                                    tracing::warn!(?err, "waveshare display mutex poisoned");
+                                }
+                            }
+                        }
+                    }
+                }
+                std::thread::sleep(sleep_duration);
+            }
         },
     )?;
+
+    #[cfg(feature = "waveshare-display")]
+    if let Some(handle) = &display {
+        match handle.lock() {
+            Ok(mut device) => {
+                if let Err(err) = device.shutdown() {
+                    tracing::warn!(?err, "failed to put waveshare display to sleep");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(?err, "waveshare display mutex poisoned during shutdown");
+            }
+        }
+    }
 
     println!("Reader requested shutdown. Exiting.");
     tracing::info!(snapshot = ?status.snapshot(), "final status");
@@ -341,12 +500,9 @@ fn handle_tag_add(
 
     if skip_tag_write {
         println!("Skipping NFC tag write (per --skip-tag-write).");
-    } else if let Err(err) = attempt_tag_write(
-        effective_reader_kind,
-        poll_duration,
-        &uid,
-        &track_str,
-    ) {
+    } else if let Err(err) =
+        attempt_tag_write(effective_reader_kind, poll_duration, &uid, &track_str)
+    {
         tracing::warn!(?err, "failed to write NFC tag; config still updated");
     }
 
@@ -535,7 +691,9 @@ impl ReaderSelection {
 fn select_reader(kind: ReaderKind, poll: Duration) -> Result<ReaderSelection, ReaderError> {
     match kind {
         ReaderKind::Noop => Ok(ReaderSelection::noop()),
-        ReaderKind::Pcsc => build_pcsc_reader(poll).map(|reader| ReaderSelection::new(ReaderKind::Pcsc, reader)),
+        ReaderKind::Pcsc => {
+            build_pcsc_reader(poll).map(|reader| ReaderSelection::new(ReaderKind::Pcsc, reader))
+        }
         ReaderKind::Auto => match build_pcsc_reader(poll) {
             Ok(reader) => Ok(ReaderSelection::new(ReaderKind::Pcsc, reader)),
             Err(err) => {

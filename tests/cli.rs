@@ -64,9 +64,9 @@ fn cli_add_command_writes_config() {
         .arg("noop")
         .arg("--skip-tag-write");
 
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("Mapped card deadbeef to songs/example.mp3"));
+    cmd.assert().success().stdout(predicate::str::contains(
+        "Mapped card deadbeef to songs/example.mp3",
+    ));
 
     let contents =
         fs::read_to_string(&config_path).expect("command should create the target config");
@@ -95,9 +95,9 @@ fn cli_tag_add_uses_positional_config() {
         .arg("noop")
         .arg("--skip-tag-write");
 
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("Mapped card cafebabe to songs/other.mp3"));
+    cmd.assert().success().stdout(predicate::str::contains(
+        "Mapped card cafebabe to songs/other.mp3",
+    ));
 
     let contents =
         fs::read_to_string(&config_path).expect("command should create the target config");
@@ -132,8 +132,7 @@ fn cli_add_command_generates_uid_for_noop_reader() {
         .stdout(predicate::str::contains("Generated synthetic card UID"))
         .stdout(predicate::str::contains("Mapped card"));
 
-    let contents =
-        fs::read_to_string(&config_path).expect("command should create a config file");
+    let contents = fs::read_to_string(&config_path).expect("command should create a config file");
     let doc: toml::Value = toml::from_str(&contents).expect("config should be valid TOML");
     let cards = doc
         .get("cards")
