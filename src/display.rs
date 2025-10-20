@@ -99,7 +99,7 @@ pub mod waveshare {
     use super::{DisplayError, StatusDisplay, status_lines};
     use crate::telemetry::StatusSnapshot;
     use embedded_graphics::{
-        mono_font::{MonoTextStyleBuilder, ascii::FONT_6X12},
+        mono_font::{MonoTextStyleBuilder, ascii::FONT_9X15_BOLD},
         prelude::*,
         text::{Baseline, Text},
     };
@@ -200,6 +200,7 @@ pub mod waveshare {
         epd: Epd2in13<SpidevDevice, BusyPin, DcPin, RstPin, Delay>,
         delay: Delay,
         rotation: DisplayRotation,
+        last_lines: Option<Vec<String>>,
     }
 
     impl WaveshareDisplay {
@@ -229,7 +230,6 @@ pub mod waveshare {
             let mut delay = Delay;
             let mut epd = Epd2in13::new(&mut spi, busy, dc, rst, &mut delay, None)
                 .map_err(|err| driver_error(err))?;
-
             epd.clear_frame(&mut spi, &mut delay)
                 .map_err(|err| driver_error(err))?;
             epd.display_frame(&mut spi, &mut delay)
@@ -240,27 +240,47 @@ pub mod waveshare {
                 epd,
                 delay,
                 rotation: config.rotation,
+                last_lines: None,
             })
         }
 
         fn render_lines(&mut self, lines: &[String]) -> Result<(), WaveshareError> {
+            if self
+                .last_lines
+                .as_ref()
+                .map(|prev| prev == lines)
+                .unwrap_or(false)
+            {
+                return Ok(());
+            }
+
             let mut frame = Display2in13::default();
             frame.set_rotation(self.rotation);
             let _ = frame.clear(Color::White);
 
+            let font = FONT_9X15_BOLD;
             let style = MonoTextStyleBuilder::new()
-                .font(&FONT_6X12)
+                .font(&font)
                 .text_color(Color::Black)
                 .background_color(Color::White)
                 .build();
 
-            let mut cursor_y = 10;
+            let max_chars = 26;
+            let line_height = font.character_size.height as i32 + 2;
+            let mut cursor_y = 4;
+            let left_margin = 4;
+
             for line in lines {
-                let display_line: String = line.chars().take(40).collect();
-                Text::with_baseline(&display_line, Point::new(4, cursor_y), style, Baseline::Top)
-                    .draw(&mut frame)
-                    .expect("render text onto display buffer");
-                cursor_y += 14;
+                let display_line: String = line.chars().take(max_chars).collect();
+                Text::with_baseline(
+                    &display_line,
+                    Point::new(left_margin, cursor_y),
+                    style,
+                    Baseline::Top,
+                )
+                .draw(&mut frame)
+                .expect("render text onto display buffer");
+                cursor_y += line_height;
             }
 
             self.epd
@@ -269,6 +289,7 @@ pub mod waveshare {
             self.epd
                 .display_frame(&mut self.spi, &mut self.delay)
                 .map_err(|err| driver_error(err))?;
+            self.last_lines = Some(lines.to_vec());
             Ok(())
         }
     }
