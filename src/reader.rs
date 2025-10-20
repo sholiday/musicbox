@@ -4,6 +4,8 @@ use crate::controller::CardUid;
 pub enum ReaderError {
     #[error("reader backend error: {message}")]
     Backend { message: String },
+    #[error("card response status {sw1:02X}{sw2:02X}")]
+    StatusWord { sw1: u8, sw2: u8 },
     #[cfg(feature = "nfc-pcsc")]
     #[error("pcsc error: {0}")]
     Pcsc(#[from] pcsc::Error),
@@ -70,11 +72,19 @@ pub mod pcsc_backend {
                 .first()
                 .ok_or_else(|| ReaderError::backend("failed to obtain reader name from PC/SC"))?
                 .as_c_str();
-            let card = self
+            match self
                 .context
                 .connect(reader_name, ShareMode::Shared, Protocols::ANY)
-                .map_err(ReaderError::from)?;
-            self.card = Some(card);
+            {
+                Ok(card) => {
+                    self.card = Some(card);
+                }
+                Err(PcscError::NoSmartcard) => {
+                    // Card absent: keep polling until one is presented.
+                    self.card = None;
+                }
+                Err(err) => return Err(ReaderError::from(err)),
+            }
             Ok(())
         }
 
@@ -89,10 +99,10 @@ pub mod pcsc_backend {
             }
             let (data, status) = response.split_at(response.len() - 2);
             if status != [0x90, 0x00] {
-                return Err(ReaderError::backend(format!(
-                    "unexpected status word {:02X}{:02X}",
-                    status[0], status[1]
-                )));
+                return Err(ReaderError::StatusWord {
+                    sw1: status[0],
+                    sw2: status[1],
+                });
             }
             Ok(CardUid::new(data.to_vec()))
         }
@@ -126,6 +136,11 @@ pub mod pcsc_backend {
 
             match uid_result {
                 Ok(uid) => Ok(Some(ReaderEvent::CardPresent { uid })),
+                Err(ReaderError::StatusWord { sw1: 0x63, sw2: 0x00 }) => {
+                    tracing::debug!("PC/SC reported status 6300; resetting reader state");
+                    self.card = None;
+                    Ok(None)
+                }
                 Err(err)
                     if matches!(
                         err,
