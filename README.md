@@ -1,5 +1,7 @@
 # Musicbox Development Notes
 
+[![Rust](https://github.com/sholiday/musicbox/actions/workflows/rust.yml/badge.svg)](https://github.com/sholiday/musicbox/actions/workflows/rust.yml)
+
 This project is an NFC‑triggered music player aimed at running on a Raspberry Pi (32‑bit OS on Pi 2/3). It is being built with TDD and commits should remain small and frequent.
 
 ## Current Architecture
