@@ -48,6 +48,7 @@ pub mod pcsc_backend {
         context: Context,
         card: Option<Card>,
         poll_interval: Duration,
+        last_uid: Option<CardUid>,
     }
 
     impl PcscReader {
@@ -57,6 +58,7 @@ pub mod pcsc_backend {
                 context,
                 card: None,
                 poll_interval,
+                last_uid: None,
             })
         }
 
@@ -78,10 +80,12 @@ pub mod pcsc_backend {
             {
                 Ok(card) => {
                     self.card = Some(card);
+                    self.last_uid = None;
                 }
                 Err(PcscError::NoSmartcard) => {
                     // Card absent: keep polling until one is presented.
                     self.card = None;
+                    self.last_uid = None;
                 }
                 Err(err) => return Err(ReaderError::from(err)),
             }
@@ -121,11 +125,20 @@ pub mod pcsc_backend {
                     .card
                     .as_ref()
                     .expect("card present after successful connect");
-                card.status2_owned().map_err(ReaderError::from)?
+                match card.status2_owned().map_err(ReaderError::from) {
+                    Ok(status) => status,
+                    Err(ReaderError::Pcsc(PcscError::RemovedCard | PcscError::ResetCard)) => {
+                        self.card = None;
+                        self.last_uid = None;
+                        return Ok(None);
+                    }
+                    Err(err) => return Err(err),
+                }
             };
 
             if !status.status().contains(Status::PRESENT) {
                 self.card = None;
+                self.last_uid = None;
                 return Ok(None);
             }
 
@@ -135,10 +148,17 @@ pub mod pcsc_backend {
             };
 
             match uid_result {
-                Ok(uid) => Ok(Some(ReaderEvent::CardPresent { uid })),
+                Ok(uid) => match self.last_uid.as_ref() {
+                    Some(previous) if previous == &uid => Ok(Some(ReaderEvent::Idle)),
+                    _ => {
+                        self.last_uid = Some(uid.clone());
+                        Ok(Some(ReaderEvent::CardPresent { uid }))
+                    }
+                },
                 Err(ReaderError::StatusWord { sw1: 0x63, sw2: 0x00 }) => {
                     tracing::debug!("PC/SC reported status 6300; resetting reader state");
                     self.card = None;
+                    self.last_uid = None;
                     Ok(None)
                 }
                 Err(err)
@@ -148,6 +168,7 @@ pub mod pcsc_backend {
                     ) =>
                 {
                     self.card = None;
+                    self.last_uid = None;
                     Ok(None)
                 }
                 Err(err) => Err(err),
