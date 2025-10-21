@@ -1,0 +1,13 @@
+[book]
+authors = ["Musicbox Contributors"]
+language = "en"
+multilingual = false
+src = "src"
+title = "Musicbox User Guide"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "ayu"

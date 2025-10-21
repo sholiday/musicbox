@@ -4,7 +4,7 @@
 
 Musicbox is an NFC‑triggered music player aimed at running on a Raspberry Pi (32‑bit OS on Pi 2/3). It is being built with TDD and commits should remain small and frequent.
 
-Looking for setup and day-to-day usage instructions? See the user guide in `docs/user-guide.md`.
+Looking for setup and day-to-day usage instructions? Visit the mdBook-based [Musicbox User Guide](https://sholiday.github.io/musicbox/) or build it locally with `mdbook serve docs`.
 
 ## Developer Notes
 
