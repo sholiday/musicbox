@@ -82,6 +82,12 @@ To automatically run the test suite before every commit, point Git at the bundle
 git config core.hooksPath .githooks
 ```
 
+## Documentation
+
+- mdBook sources live in `docs/src`. Install mdBook with `cargo install mdbook` if it is not already available.
+- Use `mdbook serve docs` for a live-reloading preview while editing.
+- `.github/workflows/docs.yml` builds the book and publishes it to GitHub Pages on pushes to `main`.
+
 ### Binary Usage
 
 ```bash
