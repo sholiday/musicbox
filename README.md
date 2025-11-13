@@ -46,6 +46,24 @@ CARGO_FEATURES="debug-http" scripts/build-armv7.sh --release
 # Visit http://<host>:3000/ for the Tailwind dashboard (status, config editor, controls)
 ```
 
+## Prebuilt Releases
+
+Tagged builds publish tarballs for both `x86_64-unknown-linux-gnu` (developer laptops) and `armv7-unknown-linux-gnueabihf` (Raspberry Pi). Each archive ships with the `musicbox` binary, `config.example.toml`, and the sample `systemd` unit so you can drop the bundle straight onto a Pi or run it locally without compiling from source.
+
+1. Download the assets from the [GitHub Releases](https://github.com/sholiday/musicbox/releases) page:
+   ```bash
+   curl -LO https://github.com/sholiday/musicbox/releases/download/v0.1.0/musicbox-v0.1.0-armv7-unknown-linux-gnueabihf.tar.gz
+   curl -LO https://github.com/sholiday/musicbox/releases/download/v0.1.0/musicbox-v0.1.0-armv7-unknown-linux-gnueabihf.tar.gz.sha256
+   ```
+2. Verify the checksum and unpack:
+   ```bash
+   sha256sum -c musicbox-v0.1.0-armv7-unknown-linux-gnueabihf.tar.gz.sha256
+   tar -xzf musicbox-v0.1.0-armv7-unknown-linux-gnueabihf.tar.gz
+   ```
+3. Copy `musicbox` into `~/musicbox/bin/`, and place the bundled config/service files wherever your deployment expects them.
+
+Substitute the desired version/tag and target architecture in the commands above. The x86_64 tarball is convenient for quick local smoke tests with the noop reader, while the armv7 build includes the ALSA and PC/SC backends required on the Pi.
+
 ## Deploy to a Raspberry Pi
 
 ```bash

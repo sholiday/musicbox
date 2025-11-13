@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_FEATURES: audio-rodio nfc-pcsc
+  REF_NAME: ${{ github.ref_name }}
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            artifact_suffix: x86_64-unknown-linux-gnu
+            cross: false
+          - target: armv7-unknown-linux-gnueabihf
+            artifact_suffix: armv7-unknown-linux-gnueabihf
+            cross: true
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install host dependencies
+        if: ${{ matrix.cross == false }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libpcsclite-dev
+
+      - name: Install cross toolchain and libraries
+        if: ${{ matrix.cross }}
+        run: |
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-arm-linux-gnueabihf \
+            libc6-dev:armhf \
+            libasound2-dev:armhf \
+            libpcsclite-dev:armhf \
+            pkg-config
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build binary
+        if: ${{ matrix.cross == false }}
+        run: cargo build --verbose --release --target ${{ matrix.target }} --features "${{ env.RELEASE_FEATURES }}"
+
+      - name: Build ARMv7 binary
+        if: ${{ matrix.cross }}
+        env:
+          CARGO_FEATURES: ${{ env.RELEASE_FEATURES }}
+        run: scripts/build-armv7.sh --release
+
+      - name: Package artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ARCHIVE_NAME="musicbox-${REF_NAME}-${{ matrix.artifact_suffix }}"
+          STAGING="dist/${ARCHIVE_NAME}"
+          mkdir -p "$STAGING"
+          install -m 755 "target/${{ matrix.target }}/release/musicbox" "$STAGING/musicbox"
+          install -m 644 examples/config.example.toml "$STAGING/config.example.toml"
+          install -m 644 examples/musicbox.service "$STAGING/musicbox.service"
+          tar -C dist -czf "dist/${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+          sha256sum "dist/${ARCHIVE_NAME}.tar.gz" > "dist/${ARCHIVE_NAME}.tar.gz.sha256"
+          rm -rf "$STAGING"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_suffix }}
+          path: |
+            dist/musicbox-${{ env.REF_NAME }}-${{ matrix.artifact_suffix }}.tar.gz
+            dist/musicbox-${{ env.REF_NAME }}-${{ matrix.artifact_suffix }}.tar.gz.sha256
+
+  release:
+    runs-on: ubuntu-latest
+    needs: package
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*
