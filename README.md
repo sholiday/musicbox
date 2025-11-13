@@ -109,6 +109,26 @@ Options:
 
 A starter config can be found in `examples/config.example.toml`.
 
+### Quiet-Hours Volume
+
+Add a `[volume]` table to the config to control playback levels throughout the day. The `default`
+value (0.0–1.0) is applied during normal hours, while one or more `[[volume.quiet_hours]]` entries
+can override the volume between a `start` and `end` time (24-hour `HH:MM` format). Windows may span
+midnight, and each entry must declare its own `volume` multiplier. Example:
+
+```toml
+[volume]
+default = 1.0
+
+[[volume.quiet_hours]]
+start = "19:30"
+end = "07:00"
+volume = 0.4
+```
+
+With this configuration, every track will play at 40% volume after 7:30 PM until 7:00 AM; outside of
+that window playback returns to the default level automatically.
+
 ### Why the optional features?
 
 The binary needs to run in a few different contexts:

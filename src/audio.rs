@@ -45,6 +45,16 @@ mod rodio_backend {
         fn reset_sink(&mut self) {
             self.sink = Sink::connect_new(self.stream.mixer());
         }
+
+        pub fn set_volume(&mut self, level: f32) -> Result<(), PlayerError> {
+            if !(0.0..=1.0).contains(&level) {
+                return Err(PlayerError::Backend {
+                    message: format!("volume {level} out of range (0.0-1.0)"),
+                });
+            }
+            self.sink.set_volume(level);
+            Ok(())
+        }
     }
 
     impl AudioPlayer for RodioPlayer {
@@ -103,6 +113,12 @@ mod rodio_backend {
             Err(PlayerError::Backend {
                 message: "rodio backend disabled; enable the `audio-rodio` feature to use it"
                     .into(),
+            })
+        }
+
+        pub fn set_volume(&mut self, _level: f32) -> Result<(), PlayerError> {
+            Err(PlayerError::Backend {
+                message: "rodio backend disabled".into(),
             })
         }
     }

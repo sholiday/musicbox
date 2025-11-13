@@ -22,14 +22,19 @@ pub fn controller_from_config_path<P: AudioPlayer>(
     path: impl AsRef<Path>,
     player: P,
 ) -> Result<MusicBoxController<P>, AppError> {
+    let config = load_config(path)?;
+    let library = config.into_library();
+    Ok(MusicBoxController::new(library, player))
+}
+
+/// Loads the raw configuration from disk.
+pub fn load_config(path: impl AsRef<Path>) -> Result<MusicBoxConfig, AppError> {
     let path_ref = path.as_ref();
     let file = File::open(path_ref).map_err(|source| AppError::OpenConfig {
         path: path_ref.into(),
         source,
     })?;
-    let config = MusicBoxConfig::from_reader(file)?;
-    let library = config.into_library();
-    Ok(MusicBoxController::new(library, player))
+    Ok(MusicBoxConfig::from_reader(file)?)
 }
 
 #[derive(Debug, thiserror::Error)]

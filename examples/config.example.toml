@@ -5,3 +5,13 @@ music_dir = "/home/pi/music"
 "04a0b1c2d3" = "song1.mp3"
 
 "abcd1234" = "album/track02.ogg"
+
+[volume]
+# Default playback volume multiplier (1.0 = 100%).
+default = 1.0
+
+# Define as many quiet-hour windows as you need. Times use 24h HH:MM format.
+[[volume.quiet_hours]]
+start = "19:30"
+end = "07:00"
+volume = 0.4

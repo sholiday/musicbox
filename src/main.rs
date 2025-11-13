@@ -1,8 +1,10 @@
 use clap::{Args, Parser, Subcommand, ValueEnum, builder::ValueHint};
-use musicbox::app::{RunLoopError, controller_from_config_path, run_until_shutdown};
+use musicbox::app::{RunLoopError, load_config, run_until_shutdown};
 use musicbox::audio::RodioPlayer;
-use musicbox::config::{self, ConfigEditError};
-use musicbox::controller::{AudioPlayer, CardUid, CardUidParseError, PlayerError, Track};
+use musicbox::config::{self, ConfigEditError, VolumeSettings};
+use musicbox::controller::{
+    AudioPlayer, CardUid, CardUidParseError, MusicBoxController, PlayerError, Track,
+};
 #[cfg(feature = "waveshare-display")]
 use musicbox::display;
 #[cfg(feature = "waveshare-display")]
@@ -278,22 +280,11 @@ fn run_player_main(
     #[cfg(feature = "waveshare-display")] waveshare_config: Option<WaveshareConfig>,
     #[cfg(feature = "debug-http")] debug_http: Option<SocketAddr>,
 ) -> Result<(), RunError> {
-    let player = if silent {
-        PlayerBackend::Noop
-    } else {
-        match RodioPlayer::new() {
-            Ok(player) => PlayerBackend::Rodio(player),
-            Err(err) => {
-                eprintln!("Audio backend unavailable ({err}). Falling back to silent playback.");
-                PlayerBackend::Noop
-            }
-        }
-    };
+    let config = load_config(&config_path)?;
+    let (library, volume_settings) = config.into_parts();
 
-    let controller = Arc::new(Mutex::new(controller_from_config_path(
-        &config_path,
-        player,
-    )?));
+    let player = PlayerBackend::from_volume(volume_settings, silent);
+    let controller = Arc::new(Mutex::new(MusicBoxController::new(library, player)));
     let poll_duration = Duration::from_millis(poll_interval_ms);
     let reader_selection = select_reader(reader_kind, poll_duration)?;
     let effective_reader_kind = reader_selection.kind();
@@ -591,19 +582,10 @@ fn handle_manual_command(command: ManualCommand, silent: bool) -> Result<(), Run
 
 /// Handles the `manual trigger` subcommand.
 fn handle_manual_trigger(args: ManualTriggerArgs, silent: bool) -> Result<(), RunError> {
-    let player = if silent {
-        PlayerBackend::Noop
-    } else {
-        match RodioPlayer::new() {
-            Ok(player) => PlayerBackend::Rodio(player),
-            Err(err) => {
-                eprintln!("Audio backend unavailable ({err}). Falling back to silent playback.");
-                PlayerBackend::Noop
-            }
-        }
-    };
-
-    let mut controller = controller_from_config_path(&args.config, player)?;
+    let config = load_config(&args.config)?;
+    let (library, volume_settings) = config.into_parts();
+    let player = PlayerBackend::from_volume(volume_settings, silent);
+    let mut controller = MusicBoxController::new(library, player);
 
     let uid = CardUid::from_hex(args.card.trim())
         .map_err(TagError::CardUidParse)
@@ -620,15 +602,63 @@ fn handle_manual_trigger(args: ManualTriggerArgs, silent: bool) -> Result<(), Ru
     Ok(())
 }
 
+type BoxedVolumePlayer = Box<dyn VolumeControlledAudioPlayer + Send>;
+
 enum PlayerBackend {
-    Rodio(RodioPlayer),
+    Rodio {
+        player: BoxedVolumePlayer,
+        volume: VolumeSettings,
+    },
     Noop,
+}
+
+trait VolumeControlledAudioPlayer: AudioPlayer {
+    fn set_volume(&mut self, level: f32) -> Result<(), PlayerError>;
+}
+
+impl VolumeControlledAudioPlayer for RodioPlayer {
+    fn set_volume(&mut self, level: f32) -> Result<(), PlayerError> {
+        RodioPlayer::set_volume(self, level)
+    }
+}
+
+impl PlayerBackend {
+    fn from_volume(volume: VolumeSettings, silent: bool) -> Self {
+        if silent {
+            return PlayerBackend::Noop;
+        }
+
+        match RodioPlayer::new() {
+            Ok(player) => PlayerBackend::Rodio {
+                player: Box::new(player),
+                volume,
+            },
+            Err(err) => {
+                eprintln!("Audio backend unavailable ({err}). Falling back to silent playback.");
+                PlayerBackend::Noop
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn with_custom_player(player: BoxedVolumePlayer, volume: VolumeSettings) -> Self {
+        PlayerBackend::Rodio { player, volume }
+    }
 }
 
 impl AudioPlayer for PlayerBackend {
     fn play(&mut self, track: &Track) -> Result<(), PlayerError> {
         match self {
-            PlayerBackend::Rodio(player) => player.play(track),
+            PlayerBackend::Rodio { player, volume } => {
+                let level = volume.current_level();
+                if (level - volume.default_level()).abs() > f32::EPSILON {
+                    tracing::info!(level, "quiet hours active; reducing volume");
+                }
+                if let Err(err) = player.set_volume(level) {
+                    tracing::warn!(?err, "failed to apply scheduled volume");
+                }
+                player.play(track)
+            }
             PlayerBackend::Noop => {
                 println!("[silent] Would play track: {}", track.path().display());
                 Ok(())
@@ -638,7 +668,7 @@ impl AudioPlayer for PlayerBackend {
 
     fn stop(&mut self) -> Result<(), PlayerError> {
         match self {
-            PlayerBackend::Rodio(player) => player.stop(),
+            PlayerBackend::Rodio { player, .. } => player.stop(),
             PlayerBackend::Noop => {
                 println!("[silent] Would stop playback");
                 Ok(())
@@ -648,7 +678,7 @@ impl AudioPlayer for PlayerBackend {
 
     fn wait_until_done(&mut self) -> Result<(), PlayerError> {
         match self {
-            PlayerBackend::Rodio(player) => player.wait_until_done(),
+            PlayerBackend::Rodio { player, .. } => player.wait_until_done(),
             PlayerBackend::Noop => Ok(()),
         }
     }
@@ -742,6 +772,8 @@ fn build_pcsc_reader(_poll: Duration) -> Result<Box<dyn NfcReader>, ReaderError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use musicbox::config::MusicBoxConfig;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn select_reader_noop() {
@@ -764,6 +796,78 @@ mod tests {
         match select_reader(ReaderKind::Pcsc, Duration::from_millis(1)) {
             Ok(_) => panic!("expected pcsc selection to fail"),
             Err(err) => assert!(matches!(err, ReaderError::Backend { .. })),
+        }
+    }
+
+    #[test]
+    fn quiet_hours_reduce_volume_before_playback() {
+        let toml = r#"
+music_dir = "/music"
+
+[cards]
+"0001" = "song.mp3"
+
+[volume]
+default = 1.0
+
+[[volume.quiet_hours]]
+start = "00:00"
+end = "12:00"
+volume = 0.4
+
+[[volume.quiet_hours]]
+start = "12:00"
+end = "00:00"
+volume = 0.4
+"#;
+
+        let config = MusicBoxConfig::from_reader(toml.as_bytes()).unwrap();
+        let volume = config.volume_settings().clone();
+
+        let recorder = RecordingPlayer::default();
+        let metrics = recorder.metrics();
+        let mut backend = PlayerBackend::with_custom_player(Box::new(recorder), volume.clone());
+
+        let track = Track::new(PathBuf::from("song.mp3"));
+        backend.play(&track).unwrap();
+
+        let levels = metrics.volumes.lock().unwrap();
+        assert_eq!(levels.len(), 1);
+        assert!((levels[0] - 0.4).abs() < f32::EPSILON);
+    }
+
+    #[derive(Default, Clone)]
+    struct RecordingPlayer {
+        volumes: Arc<Mutex<Vec<f32>>>,
+    }
+
+    impl RecordingPlayer {
+        fn metrics(&self) -> RecordingMetrics {
+            RecordingMetrics {
+                volumes: self.volumes.clone(),
+            }
+        }
+    }
+
+    struct RecordingMetrics {
+        volumes: Arc<Mutex<Vec<f32>>>,
+    }
+
+    impl AudioPlayer for RecordingPlayer {
+        fn play(&mut self, track: &Track) -> Result<(), PlayerError> {
+            let _ = track.path();
+            Ok(())
+        }
+
+        fn stop(&mut self) -> Result<(), PlayerError> {
+            Ok(())
+        }
+    }
+
+    impl VolumeControlledAudioPlayer for RecordingPlayer {
+        fn set_volume(&mut self, level: f32) -> Result<(), PlayerError> {
+            self.volumes.lock().unwrap().push(level);
+            Ok(())
         }
     }
 }

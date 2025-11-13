@@ -8,10 +8,19 @@ music_dir = "/home/pi/music"
 [cards]
 "04a0b1c2d3" = "song1.mp3"
 "abcd1234" = "album/track02.ogg"
+
+[volume]
+default = 1.0
+
+[[volume.quiet_hours]]
+start = "19:30"
+end = "07:00"
+volume = 0.4
 ```
 
 - `music_dir` points at the root directory containing your audio files. Track paths resolve relative to this directory.
 - Each key under `[cards]` is a hex-encoded card UID (no spaces, either case). Values are paths to playable audio files under `music_dir`.
 - Paths can reference subdirectories. Keep directory names descriptive if you plan to group albums or playlists.
+- `[volume]` declares the default playback multiplier and one or more quiet-hour windows. Each window uses 24-hour `HH:MM` strings for `start`/`end` and forces its own `volume` (0.0–1.0). Windows may cross midnight, so `start = "19:30"` and `end = "07:00"` is valid.
 
 Store the configuration on the Raspberry Pi (for example, `~/musicbox/config/musicbox.toml`). Update the file whenever you add new tracks or cards, then restart the Musicbox service or trigger a config reload if available. The loader validates syntax and track paths on startup; the process exits with a descriptive error if validation fails.

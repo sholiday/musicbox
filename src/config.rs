@@ -1,4 +1,5 @@
 use crate::controller::{CardUid, CardUidParseError, Library, Track};
+use chrono::{Local, NaiveTime};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -18,6 +19,10 @@ pub enum ConfigError {
     CardUid(#[from] CardUidParseError),
     #[error("duplicate mapping for card {0:?}")]
     DuplicateCard(CardUid),
+    #[error("invalid volume setting {field}: {reason}")]
+    InvalidVolume { field: &'static str, reason: String },
+    #[error("invalid quiet hours entry at index {index}: {reason}")]
+    InvalidQuietHours { index: usize, reason: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -47,12 +52,42 @@ pub enum ConfigEditError {
 pub struct MusicBoxConfig {
     music_dir: PathBuf,
     cards: HashMap<CardUid, PathBuf>,
+    volume: VolumeSettings,
 }
 
 #[derive(Debug, Deserialize)]
 struct RawConfig {
     music_dir: PathBuf,
     cards: HashMap<String, String>,
+    #[serde(default)]
+    volume: Option<RawVolumeConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawVolumeConfig {
+    default: Option<f32>,
+    #[serde(default)]
+    quiet_hours: Vec<RawQuietWindow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawQuietWindow {
+    start: String,
+    end: String,
+    volume: Option<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VolumeSettings {
+    default_level: f32,
+    quiet_windows: Vec<QuietWindow>,
+}
+
+#[derive(Debug, Clone)]
+struct QuietWindow {
+    start: NaiveTime,
+    end: NaiveTime,
+    level: f32,
 }
 
 impl MusicBoxConfig {
@@ -67,8 +102,16 @@ impl MusicBoxConfig {
         &self.music_dir
     }
 
+    pub fn volume_settings(&self) -> &VolumeSettings {
+        &self.volume
+    }
+
     fn from_raw(raw: RawConfig) -> Result<Self, ConfigError> {
-        let RawConfig { music_dir, cards } = raw;
+        let RawConfig {
+            music_dir,
+            cards,
+            volume,
+        } = raw;
         let music_dir = music_dir;
         let mut parsed = HashMap::with_capacity(cards.len());
         for (card_hex, relative_path) in cards {
@@ -78,20 +121,123 @@ impl MusicBoxConfig {
                 return Err(ConfigError::DuplicateCard(uid));
             }
         }
+        let volume = VolumeSettings::from_raw(volume)?;
         Ok(Self {
             music_dir,
             cards: parsed,
+            volume,
         })
     }
 
     pub fn into_library(self) -> Library {
-        let tracks = self
-            .cards
-            .into_iter()
-            .map(|(uid, path)| (uid, Track::new(path)))
-            .collect();
-        Library::new(tracks)
+        let (library, _) = self.into_parts();
+        library
     }
+
+    pub fn into_parts(self) -> (Library, VolumeSettings) {
+        let library = build_library(self.cards);
+        (library, self.volume)
+    }
+
+    pub fn library(&self) -> Library {
+        build_library(self.cards.clone())
+    }
+}
+
+fn build_library(entries: HashMap<CardUid, PathBuf>) -> Library {
+    let tracks = entries
+        .into_iter()
+        .map(|(uid, path)| (uid, Track::new(path)))
+        .collect();
+    Library::new(tracks)
+}
+
+impl VolumeSettings {
+    fn from_raw(raw: Option<RawVolumeConfig>) -> Result<Self, ConfigError> {
+        let raw = raw.unwrap_or_default();
+        let default = raw.default.unwrap_or(1.0);
+        let default_level =
+            validate_level(default).map_err(|reason| ConfigError::InvalidVolume {
+                field: "volume.default",
+                reason,
+            })?;
+
+        let mut quiet_windows = Vec::with_capacity(raw.quiet_hours.len());
+        for (index, window) in raw.quiet_hours.into_iter().enumerate() {
+            let start = parse_time(&window.start)
+                .map_err(|reason| ConfigError::InvalidQuietHours { index, reason })?;
+            let end = parse_time(&window.end)
+                .map_err(|reason| ConfigError::InvalidQuietHours { index, reason })?;
+            if start == end {
+                return Err(ConfigError::InvalidQuietHours {
+                    index,
+                    reason: "start and end must differ".into(),
+                });
+            }
+
+            let level_value = window
+                .volume
+                .ok_or_else(|| ConfigError::InvalidQuietHours {
+                    index,
+                    reason: "volume is required for each quiet hours entry".into(),
+                })?;
+            let level = validate_level(level_value)
+                .map_err(|reason| ConfigError::InvalidQuietHours { index, reason })?;
+
+            quiet_windows.push(QuietWindow { start, end, level });
+        }
+
+        Ok(Self {
+            default_level,
+            quiet_windows,
+        })
+    }
+
+    pub fn default_level(&self) -> f32 {
+        self.default_level
+    }
+
+    pub fn current_level(&self) -> f32 {
+        let now = Local::now().time();
+        self.level_for_time(now)
+    }
+
+    pub fn level_for_time(&self, time: NaiveTime) -> f32 {
+        self.active_window(time)
+            .map(|window| window.level)
+            .unwrap_or(self.default_level)
+    }
+
+    fn active_window(&self, time: NaiveTime) -> Option<&QuietWindow> {
+        self.quiet_windows
+            .iter()
+            .find(|window| window.contains(time))
+    }
+}
+
+impl QuietWindow {
+    fn contains(&self, time: NaiveTime) -> bool {
+        if self.start <= self.end {
+            time >= self.start && time < self.end
+        } else {
+            time >= self.start || time < self.end
+        }
+    }
+}
+
+fn validate_level(value: f32) -> Result<f32, String> {
+    if !(0.0..=1.0).contains(&value) {
+        return Err(format!(
+            "value {value} must be between 0.0 and 1.0 inclusive"
+        ));
+    }
+    Ok(value)
+}
+
+fn parse_time(value: &str) -> Result<NaiveTime, String> {
+    let trimmed = value.trim();
+    NaiveTime::parse_from_str(trimmed, "%H:%M")
+        .map_err(|_| format!("{trimmed:?} must be in HH:MM 24h format"))
 }
 
 /// Adds a new card to the configuration file.
@@ -238,5 +384,69 @@ music_dir = "/music"
         let uid = CardUid::from_hex("0c0d").unwrap();
         let err = add_card_to_config(&path, &uid, "songs/new.mp3").unwrap_err();
         assert!(matches!(err, ConfigEditError::Duplicate(_)));
+    }
+
+    #[test]
+    fn parses_volume_schedule() {
+        let toml = r#"
+music_dir = "/music"
+
+[cards]
+"0a0b" = "song1.mp3"
+
+[volume]
+default = 0.8
+
+[[volume.quiet_hours]]
+start = "20:00"
+end = "07:30"
+volume = 0.35
+"#;
+
+        let config = MusicBoxConfig::from_reader(toml.as_bytes()).unwrap();
+        assert!((config.volume_settings().default_level() - 0.8).abs() < f32::EPSILON);
+
+        let settings = config.volume_settings().clone();
+        let evening = NaiveTime::from_hms_opt(21, 0, 0).unwrap();
+        let morning = NaiveTime::from_hms_opt(6, 45, 0).unwrap();
+        let midday = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+
+        assert!((settings.level_for_time(evening) - 0.35).abs() < f32::EPSILON);
+        assert!((settings.level_for_time(morning) - 0.35).abs() < f32::EPSILON);
+        assert!((settings.level_for_time(midday) - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn rejects_out_of_range_volume() {
+        let toml = r#"
+music_dir = "/music"
+
+[cards]
+"0a0b" = "song1.mp3"
+
+[volume]
+default = 1.2
+"#;
+
+        let err = MusicBoxConfig::from_reader(toml.as_bytes()).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidVolume { .. }));
+    }
+
+    #[test]
+    fn rejects_invalid_quiet_hours() {
+        let toml = r#"
+music_dir = "/music"
+
+[cards]
+"0a0b" = "song1.mp3"
+
+[[volume.quiet_hours]]
+start = "10:00"
+end = "10:00"
+volume = 0.4
+"#;
+
+        let err = MusicBoxConfig::from_reader(toml.as_bytes()).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidQuietHours { .. }));
     }
 }

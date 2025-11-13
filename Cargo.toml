@@ -32,6 +32,7 @@ epd-waveshare = { version = "0.6", optional = true }
 embedded-graphics = { version = "0.8", optional = true }
 linux-embedded-hal = { version = "0.4", optional = true }
 gpio-cdev = { version = "0.6", optional = true }
+chrono = { version = "0.4", features = ["clock"] }
 
 [dev-dependencies]
 assert_cmd = "2.0"
