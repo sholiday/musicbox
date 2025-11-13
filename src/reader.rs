@@ -155,7 +155,10 @@ pub mod pcsc_backend {
                         Ok(Some(ReaderEvent::CardPresent { uid }))
                     }
                 },
-                Err(ReaderError::StatusWord { sw1: 0x63, sw2: 0x00 }) => {
+                Err(ReaderError::StatusWord {
+                    sw1: 0x63,
+                    sw2: 0x00,
+                }) => {
                     tracing::debug!("PC/SC reported status 6300; resetting reader state");
                     self.card = None;
                     self.last_uid = None;
