@@ -43,6 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo dpkg --add-architecture armhf
+          sudo sed -i -e 's/^deb http/deb [arch=amd64] http/' -e 's/^deb https/deb [arch=amd64] https/' /etc/apt/sources.list
           UBUNTU_CODENAME="$(lsb_release -sc)"
           {
             echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports ${UBUNTU_CODENAME} main restricted universe multiverse"
