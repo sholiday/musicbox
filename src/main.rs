@@ -295,7 +295,9 @@ fn run_player_main(
         player,
     )?));
     let poll_duration = Duration::from_millis(poll_interval_ms);
-    let mut reader = select_reader(reader_kind, poll_duration)?.into_reader();
+    let reader_selection = select_reader(reader_kind, poll_duration)?;
+    let effective_reader_kind = reader_selection.kind();
+    let mut reader = reader_selection.into_reader();
 
     let status = SharedStatus::default();
     let action_status_state = status.clone();
@@ -349,7 +351,14 @@ fn run_player_main(
     }
 
     println!("Loaded configuration from {}", config_path.display());
-    println!("Awaiting NFC interactions (reader not connected in this environment).");
+    match effective_reader_kind {
+        ReaderKind::Pcsc => {
+            println!("NFC reader detected (PC/SC). Present a card to start playback.");
+        }
+        ReaderKind::Noop | ReaderKind::Auto => {
+            println!("Awaiting NFC interactions (reader not connected in this environment).");
+        }
+    }
 
     let sleep_duration = Duration::from_millis(poll_interval_ms);
 

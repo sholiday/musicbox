@@ -1,0 +1,25 @@
+[Unit]
+Description=Musicbox NFC-triggered music player
+After=network-online.target sound.target pcscd.service
+Wants=network-online.target pcscd.service
+
+[Service]
+Type=simple
+User=musicbox
+Group=audio
+SupplementaryGroups=musicboxd
+WorkingDirectory=/home/musicbox/musicbox
+EnvironmentFile=-/etc/default/musicbox
+Environment=MUSICBOX_BIN=/home/musicbox/musicbox/bin/musicbox
+Environment=MUSICBOX_CONFIG=/home/musicbox/musicbox/config/musicbox.toml
+Environment=MUSICBOX_READER=auto
+Environment=MUSICBOX_EXTRA_ARGS=
+ExecStart=${MUSICBOX_BIN} --reader ${MUSICBOX_READER} ${MUSICBOX_EXTRA_ARGS} ${MUSICBOX_CONFIG}
+Restart=on-failure
+RestartSec=3
+LogsDirectory=musicbox
+StandardOutput=append:/var/log/musicbox/musicbox.log
+StandardError=append:/var/log/musicbox/musicbox.log
+
+[Install]
+WantedBy=multi-user.target
