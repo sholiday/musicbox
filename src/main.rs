@@ -644,6 +644,43 @@ impl PlayerBackend {
     fn with_custom_player(player: BoxedVolumePlayer, volume: VolumeSettings) -> Self {
         PlayerBackend::Rodio { player, volume }
     }
+
+    fn reset_audio_backend(&mut self, reason: &str) {
+        tracing::error!(
+            context = reason,
+            "audio backend failed; attempting to reset output stream"
+        );
+
+        let Some(volume) = (match self {
+            PlayerBackend::Rodio { volume, .. } => Some(volume.clone()),
+            PlayerBackend::Noop => None,
+        }) else {
+            return;
+        };
+
+        match RodioPlayer::new() {
+            Ok(mut new_player) => {
+                if let Err(err) = new_player.set_volume(volume.current_level()) {
+                    tracing::warn!(
+                        ?err,
+                        "failed to restore volume after resetting audio backend"
+                    );
+                }
+                *self = PlayerBackend::Rodio {
+                    player: Box::new(new_player),
+                    volume,
+                };
+                tracing::info!("audio backend reset succeeded");
+            }
+            Err(err) => {
+                tracing::warn!(
+                    ?err,
+                    "audio backend reset failed; falling back to silent playback"
+                );
+                *self = PlayerBackend::Noop;
+            }
+        }
+    }
 }
 
 impl AudioPlayer for PlayerBackend {
@@ -657,7 +694,14 @@ impl AudioPlayer for PlayerBackend {
                 if let Err(err) = player.set_volume(level) {
                     tracing::warn!(?err, "failed to apply scheduled volume");
                 }
-                player.play(track)
+                match player.play(track) {
+                    Ok(()) => Ok(()),
+                    Err(err) => {
+                        tracing::error!(?err, "audio playback failed");
+                        self.reset_audio_backend("playback failed");
+                        Ok(())
+                    }
+                }
             }
             PlayerBackend::Noop => {
                 println!("[silent] Would play track: {}", track.path().display());
@@ -668,7 +712,14 @@ impl AudioPlayer for PlayerBackend {
 
     fn stop(&mut self) -> Result<(), PlayerError> {
         match self {
-            PlayerBackend::Rodio { player, .. } => player.stop(),
+            PlayerBackend::Rodio { player, .. } => match player.stop() {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    tracing::error!(?err, "audio stop failed");
+                    self.reset_audio_backend("stop failed");
+                    Ok(())
+                }
+            },
             PlayerBackend::Noop => {
                 println!("[silent] Would stop playback");
                 Ok(())
@@ -678,7 +729,14 @@ impl AudioPlayer for PlayerBackend {
 
     fn wait_until_done(&mut self) -> Result<(), PlayerError> {
         match self {
-            PlayerBackend::Rodio { player, .. } => player.wait_until_done(),
+            PlayerBackend::Rodio { player, .. } => match player.wait_until_done() {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    tracing::error!(?err, "audio wait_until_done failed");
+                    self.reset_audio_backend("wait_until_done failed");
+                    Ok(())
+                }
+            },
             PlayerBackend::Noop => Ok(()),
         }
     }
