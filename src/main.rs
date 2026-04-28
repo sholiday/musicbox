@@ -176,6 +176,14 @@ struct WaveshareDisplayArgs {
     reset_pin: u64,
 
     #[arg(
+        long = "waveshare-power-pin",
+        value_name = "PIN",
+        default_value_t = 18,
+        help = "GPIO pin wired to the display PWR line"
+    )]
+    power_pin: u64,
+
+    #[arg(
         long = "waveshare-gpio-chip",
         value_name = "PATH",
         default_value = "/dev/gpiochip0",
@@ -196,6 +204,7 @@ fn waveshare_config_from_args(args: &WaveshareDisplayArgs) -> Option<WaveshareCo
     config.busy_pin = args.busy_pin;
     config.dc_pin = args.dc_pin;
     config.reset_pin = args.reset_pin;
+    config.power_pin = args.power_pin;
     config.gpio_chip_path = args.gpio_chip_path.clone();
     Some(config)
 }
@@ -355,8 +364,6 @@ fn run_player_main(
 
     #[cfg(feature = "waveshare-display")]
     let display_for_actions = display.clone();
-    #[cfg(feature = "waveshare-display")]
-    let display_for_idle = display.clone();
 
     run_until_shutdown(
         controller.clone(),
@@ -388,29 +395,9 @@ fn run_player_main(
             }
         },
         {
-            #[cfg(feature = "waveshare-display")]
-            let display_for_idle = display_for_idle;
             let idle_status = idle_status_state;
             move || {
                 idle_status.record_idle();
-                #[cfg(feature = "waveshare-display")]
-                {
-                    if let Some(handle) = &display_for_idle {
-                        let snapshot = idle_status.snapshot();
-                        if snapshot.idle_events % 100 == 0 {
-                            match handle.lock() {
-                                Ok(mut device) => {
-                                    if let Err(err) = device.update(&snapshot) {
-                                        tracing::warn!(?err, "waveshare display update failed");
-                                    }
-                                }
-                                Err(err) => {
-                                    tracing::warn!(?err, "waveshare display mutex poisoned");
-                                }
-                            }
-                        }
-                    }
-                }
                 std::thread::sleep(sleep_duration);
             }
         },

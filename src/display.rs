@@ -104,20 +104,21 @@ pub mod waveshare {
         text::{Baseline, Text},
     };
     use epd_waveshare::{
-        epd2in13_v2::{Display2in13, Epd2in13},
-        prelude::{Color, DisplayRotation, WaveshareDisplay as EpdDriver},
+        epd2in13_v2::Display2in13,
+        prelude::{Color, DisplayRotation},
     };
     use gpio_cdev::{Chip, LineRequestFlags};
     use linux_embedded_hal::{
-        CdevPin, Delay, SpidevDevice,
+        CdevPin, SpidevDevice,
         spidev::{SpiModeFlags, Spidev, SpidevOptions},
     };
-    use std::{io, path::Path};
+    use std::{io, io::Write, path::Path, time::Duration};
     use thiserror::Error;
 
     type BusyPin = CdevPin;
     type DcPin = CdevPin;
     type RstPin = CdevPin;
+    type PwrPin = CdevPin;
     const GPIO_CONSUMER_TAG: &str = "musicbox-waveshare";
 
     fn open_spi(path: &Path, speed_hz: u32) -> Result<SpidevDevice, io::Error> {
@@ -162,6 +163,7 @@ pub mod waveshare {
         pub busy_pin: u64,
         pub dc_pin: u64,
         pub reset_pin: u64,
+        pub power_pin: u64,
         pub spi_speed_hz: u32,
         pub rotation: DisplayRotation,
         pub gpio_chip_path: String,
@@ -174,7 +176,8 @@ pub mod waveshare {
                 busy_pin: 24,
                 dc_pin: 25,
                 reset_pin: 17,
-                spi_speed_hz: 8_000_000,
+                power_pin: 18,
+                spi_speed_hz: 4_000_000,
                 rotation: DisplayRotation::Rotate270,
                 gpio_chip_path: "/dev/gpiochip0".to_string(),
             }
@@ -197,8 +200,10 @@ pub mod waveshare {
     /// Renderer that targets the Waveshare 2.13\" e-ink HAT.
     pub struct WaveshareDisplay {
         spi: SpidevDevice,
-        epd: Epd2in13<SpidevDevice, BusyPin, DcPin, RstPin, Delay>,
-        delay: Delay,
+        busy: BusyPin,
+        dc: DcPin,
+        reset: RstPin,
+        power: PwrPin,
         rotation: DisplayRotation,
         last_lines: Option<Vec<String>>,
     }
@@ -213,35 +218,150 @@ pub mod waveshare {
                 )));
             }
 
-            let mut spi = open_spi(spi_path, config.spi_speed_hz)?;
+            let spi = open_spi(spi_path, config.spi_speed_hz)?;
 
             let mut chip =
                 Chip::new(Path::new(&config.gpio_chip_path)).map_err(WaveshareError::Gpio)?;
             let busy_offset = to_line_offset(config.busy_pin)?;
             let dc_offset = to_line_offset(config.dc_pin)?;
             let rst_offset = to_line_offset(config.reset_pin)?;
+            let pwr_offset = to_line_offset(config.power_pin)?;
 
             let busy = request_input_pin(&mut chip, busy_offset).map_err(WaveshareError::Gpio)?;
             let dc =
                 request_output_pin(&mut chip, dc_offset, false).map_err(WaveshareError::Gpio)?;
             let rst =
                 request_output_pin(&mut chip, rst_offset, true).map_err(WaveshareError::Gpio)?;
+            let power =
+                request_output_pin(&mut chip, pwr_offset, true).map_err(WaveshareError::Gpio)?;
 
-            let mut delay = Delay;
-            let mut epd = Epd2in13::new(&mut spi, busy, dc, rst, &mut delay, None)
-                .map_err(|err| driver_error(err))?;
-            epd.clear_frame(&mut spi, &mut delay)
-                .map_err(|err| driver_error(err))?;
-            epd.display_frame(&mut spi, &mut delay)
-                .map_err(|err| driver_error(err))?;
-
-            Ok(Self {
+            let mut display = Self {
                 spi,
-                epd,
-                delay,
+                busy,
+                dc,
+                reset: rst,
+                power,
                 rotation: config.rotation,
                 last_lines: None,
-            })
+            };
+            display.init_v4()?;
+            display.clear_v4(Color::White)?;
+            Ok(display)
+        }
+
+        fn reset_v4(&mut self) -> Result<(), WaveshareError> {
+            self.reset.set_value(1).map_err(WaveshareError::Gpio)?;
+            std::thread::sleep(Duration::from_millis(20));
+            self.reset.set_value(0).map_err(WaveshareError::Gpio)?;
+            std::thread::sleep(Duration::from_millis(2));
+            self.reset.set_value(1).map_err(WaveshareError::Gpio)?;
+            std::thread::sleep(Duration::from_millis(20));
+            Ok(())
+        }
+
+        fn wait_until_idle_v4(&mut self) -> Result<(), WaveshareError> {
+            while self.busy.get_value().map_err(WaveshareError::Gpio)? == 1 {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(())
+        }
+
+        fn send_command(&mut self, command: u8) -> Result<(), WaveshareError> {
+            self.dc.set_value(0).map_err(WaveshareError::Gpio)?;
+            self.spi.write_all(&[command]).map_err(WaveshareError::Spi)
+        }
+
+        fn send_data(&mut self, data: u8) -> Result<(), WaveshareError> {
+            self.dc.set_value(1).map_err(WaveshareError::Gpio)?;
+            self.spi.write_all(&[data]).map_err(WaveshareError::Spi)
+        }
+
+        fn send_data_slice(&mut self, data: &[u8]) -> Result<(), WaveshareError> {
+            self.dc.set_value(1).map_err(WaveshareError::Gpio)?;
+            self.spi.write_all(data).map_err(WaveshareError::Spi)
+        }
+
+        fn set_window_v4(
+            &mut self,
+            x_start: u16,
+            y_start: u16,
+            x_end: u16,
+            y_end: u16,
+        ) -> Result<(), WaveshareError> {
+            self.send_command(0x44)?;
+            self.send_data(((x_start >> 3) & 0xff) as u8)?;
+            self.send_data(((x_end >> 3) & 0xff) as u8)?;
+
+            self.send_command(0x45)?;
+            self.send_data((y_start & 0xff) as u8)?;
+            self.send_data((y_start >> 8) as u8)?;
+            self.send_data((y_end & 0xff) as u8)?;
+            self.send_data((y_end >> 8) as u8)?;
+            Ok(())
+        }
+
+        fn set_cursor_v4(&mut self, x: u16, y: u16) -> Result<(), WaveshareError> {
+            self.send_command(0x4e)?;
+            self.send_data((x & 0xff) as u8)?;
+
+            self.send_command(0x4f)?;
+            self.send_data((y & 0xff) as u8)?;
+            self.send_data((y >> 8) as u8)?;
+            Ok(())
+        }
+
+        fn init_v4(&mut self) -> Result<(), WaveshareError> {
+            self.power.set_value(1).map_err(WaveshareError::Gpio)?;
+            self.reset_v4()?;
+
+            self.wait_until_idle_v4()?;
+            self.send_command(0x12)?;
+            self.wait_until_idle_v4()?;
+
+            self.send_command(0x01)?;
+            self.send_data(0xf9)?;
+            self.send_data(0x00)?;
+            self.send_data(0x00)?;
+
+            self.send_command(0x11)?;
+            self.send_data(0x03)?;
+
+            self.set_window_v4(0, 0, 121, 249)?;
+            self.set_cursor_v4(0, 0)?;
+
+            self.send_command(0x3c)?;
+            self.send_data(0x05)?;
+
+            self.send_command(0x21)?;
+            self.send_data(0x00)?;
+            self.send_data(0x80)?;
+
+            self.send_command(0x18)?;
+            self.send_data(0x80)?;
+
+            self.wait_until_idle_v4()
+        }
+
+        fn turn_on_display_v4(&mut self) -> Result<(), WaveshareError> {
+            self.send_command(0x22)?;
+            self.send_data(0xf7)?;
+            self.send_command(0x20)?;
+            self.wait_until_idle_v4()
+        }
+
+        fn display_frame_v4(&mut self, buffer: &[u8]) -> Result<(), WaveshareError> {
+            self.send_command(0x24)?;
+            self.send_data_slice(buffer)?;
+            self.turn_on_display_v4()
+        }
+
+        fn clear_v4(&mut self, color: Color) -> Result<(), WaveshareError> {
+            let byte = match color {
+                Color::White => 0xff,
+                Color::Black => 0x00,
+            };
+            let buffer = [byte; 4000];
+            self.display_frame_v4(&buffer)
         }
 
         fn render_lines(&mut self, lines: &[String]) -> Result<(), WaveshareError> {
@@ -283,12 +403,7 @@ pub mod waveshare {
                 cursor_y += line_height;
             }
 
-            self.epd
-                .update_frame(&mut self.spi, frame.buffer(), &mut self.delay)
-                .map_err(|err| driver_error(err))?;
-            self.epd
-                .display_frame(&mut self.spi, &mut self.delay)
-                .map_err(|err| driver_error(err))?;
+            self.display_frame_v4(frame.buffer())?;
             self.last_lines = Some(lines.to_vec());
             Ok(())
         }
@@ -301,15 +416,12 @@ pub mod waveshare {
         }
 
         fn shutdown(&mut self) -> Result<(), DisplayError> {
-            self.epd
-                .sleep(&mut self.spi, &mut self.delay)
-                .map_err(|err| driver_error(err))?;
+            self.send_command(0x10)?;
+            self.send_data(0x01)?;
+            std::thread::sleep(Duration::from_millis(2000));
+            self.power.set_value(0).map_err(WaveshareError::Gpio)?;
             Ok(())
         }
-    }
-
-    fn driver_error<E: std::fmt::Display>(err: E) -> WaveshareError {
-        WaveshareError::Driver(err.to_string())
     }
 }
 
