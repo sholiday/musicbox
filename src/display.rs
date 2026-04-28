@@ -216,7 +216,7 @@ pub mod waveshare {
         reset: RstPin,
         power: PwrPin,
         rotation: DisplayRotation,
-        last_lines: Option<Vec<String>>,
+        last_render_key: Option<RenderCacheKey>,
         metadata_cache: HashMap<PathBuf, TrackDisplayMetadata>,
     }
 
@@ -254,7 +254,7 @@ pub mod waveshare {
                 reset: rst,
                 power,
                 rotation: config.rotation,
-                last_lines: None,
+                last_render_key: None,
                 metadata_cache: HashMap::new(),
             };
             display.init_v4()?;
@@ -382,7 +382,7 @@ pub mod waveshare {
         fn render_snapshot(&mut self, snapshot: &StatusSnapshot) -> Result<(), WaveshareError> {
             let rendered = self.rendered_status(snapshot);
             if self
-                .last_lines
+                .last_render_key
                 .as_ref()
                 .map(|prev| prev == &rendered.cache_key)
                 .unwrap_or(false)
@@ -431,7 +431,7 @@ pub mod waveshare {
             }
 
             self.display_frame_v4(frame.buffer())?;
-            self.last_lines = Some(rendered.cache_key);
+            self.last_render_key = Some(rendered.cache_key);
             Ok(())
         }
 
@@ -469,11 +469,7 @@ pub mod waveshare {
                 .clone()
                 .unwrap_or_else(|| display_name_for_track(track));
             let lines = vec![title, state.to_string()];
-            RenderedStatus {
-                cache_key: lines.clone(),
-                lines,
-                cover: metadata.cover.clone(),
-            }
+            RenderedStatus::with_track(lines, track.path(), metadata.cover.clone())
         }
 
         fn metadata_for(&mut self, track: &Track) -> &TrackDisplayMetadata {
@@ -552,16 +548,39 @@ pub mod waveshare {
         }
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct RenderCacheKey {
+        lines: Vec<String>,
+        track_path: Option<PathBuf>,
+        has_cover: bool,
+    }
+
     struct RenderedStatus {
-        cache_key: Vec<String>,
+        cache_key: RenderCacheKey,
         lines: Vec<String>,
         cover: Option<CoverImage>,
     }
 
     impl RenderedStatus {
+        fn with_track(lines: Vec<String>, track_path: &Path, cover: Option<CoverImage>) -> Self {
+            Self {
+                cache_key: RenderCacheKey {
+                    lines: lines.clone(),
+                    track_path: Some(track_path.to_path_buf()),
+                    has_cover: cover.is_some(),
+                },
+                lines,
+                cover,
+            }
+        }
+
         fn without_cover(lines: Vec<String>) -> Self {
             Self {
-                cache_key: lines.clone(),
+                cache_key: RenderCacheKey {
+                    lines: lines.clone(),
+                    track_path: None,
+                    has_cover: false,
+                },
                 lines,
                 cover: None,
             }
@@ -653,6 +672,37 @@ pub mod waveshare {
             lines.push(current);
         }
         lines
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn track_cache_key_includes_track_path() {
+            let lines = vec!["Shared title".to_string(), "Playing".to_string()];
+
+            let first = RenderedStatus::with_track(lines.clone(), Path::new("one.mp3"), None);
+            let second = RenderedStatus::with_track(lines, Path::new("two.mp3"), None);
+
+            assert_ne!(first.cache_key, second.cache_key);
+        }
+
+        #[test]
+        fn track_cache_key_includes_cover_presence() {
+            let lines = vec!["Shared title".to_string(), "Playing".to_string()];
+            let cover = CoverImage {
+                width: 1,
+                height: 1,
+                pixels: vec![0],
+            };
+
+            let without_cover =
+                RenderedStatus::with_track(lines.clone(), Path::new("song.mp3"), None);
+            let with_cover = RenderedStatus::with_track(lines, Path::new("song.mp3"), Some(cover));
+
+            assert_ne!(without_cover.cache_key, with_cover.cache_key);
+        }
     }
 }
 
