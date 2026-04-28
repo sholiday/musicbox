@@ -96,11 +96,15 @@ fn format_update_age(delta: Duration) -> String {
 
 #[cfg(all(feature = "waveshare-display", target_os = "linux"))]
 pub mod waveshare {
-    use super::{DisplayError, StatusDisplay, status_lines};
-    use crate::telemetry::StatusSnapshot;
+    use super::{DisplayError, StatusDisplay};
+    use crate::{
+        controller::{ControllerAction, Track},
+        telemetry::StatusSnapshot,
+    };
     use embedded_graphics::{
         mono_font::{MonoTextStyleBuilder, ascii::FONT_9X15_BOLD},
         prelude::*,
+        primitives::{PrimitiveStyle, Rectangle},
         text::{Baseline, Text},
     };
     use epd_waveshare::{
@@ -112,7 +116,13 @@ pub mod waveshare {
         CdevPin, SpidevDevice,
         spidev::{SpiModeFlags, Spidev, SpidevOptions},
     };
-    use std::{io, io::Write, path::Path, time::Duration};
+    use std::{
+        collections::HashMap,
+        io,
+        io::Write,
+        path::{Path, PathBuf},
+        time::Duration,
+    };
     use thiserror::Error;
 
     type BusyPin = CdevPin;
@@ -120,6 +130,7 @@ pub mod waveshare {
     type RstPin = CdevPin;
     type PwrPin = CdevPin;
     const GPIO_CONSUMER_TAG: &str = "musicbox-waveshare";
+    const COVER_SIZE: u32 = 116;
 
     fn open_spi(path: &Path, speed_hz: u32) -> Result<SpidevDevice, io::Error> {
         let mut spi = Spidev::open(path)?;
@@ -206,6 +217,7 @@ pub mod waveshare {
         power: PwrPin,
         rotation: DisplayRotation,
         last_lines: Option<Vec<String>>,
+        metadata_cache: HashMap<PathBuf, TrackDisplayMetadata>,
     }
 
     impl WaveshareDisplay {
@@ -243,6 +255,7 @@ pub mod waveshare {
                 power,
                 rotation: config.rotation,
                 last_lines: None,
+                metadata_cache: HashMap::new(),
             };
             display.init_v4()?;
             display.clear_v4(Color::White)?;
@@ -350,6 +363,8 @@ pub mod waveshare {
         }
 
         fn display_frame_v4(&mut self, buffer: &[u8]) -> Result<(), WaveshareError> {
+            self.set_window_v4(0, 0, 121, 249)?;
+            self.set_cursor_v4(0, 0)?;
             self.send_command(0x24)?;
             self.send_data_slice(buffer)?;
             self.turn_on_display_v4()
@@ -364,11 +379,12 @@ pub mod waveshare {
             self.display_frame_v4(&buffer)
         }
 
-        fn render_lines(&mut self, lines: &[String]) -> Result<(), WaveshareError> {
+        fn render_snapshot(&mut self, snapshot: &StatusSnapshot) -> Result<(), WaveshareError> {
+            let rendered = self.rendered_status(snapshot);
             if self
                 .last_lines
                 .as_ref()
-                .map(|prev| prev == lines)
+                .map(|prev| prev == &rendered.cache_key)
                 .unwrap_or(false)
             {
                 return Ok(());
@@ -385,34 +401,92 @@ pub mod waveshare {
                 .background_color(Color::White)
                 .build();
 
-            let max_chars = 26;
-            let line_height = font.character_size.height as i32 + 2;
-            let mut cursor_y = 4;
-            let left_margin = 4;
+            if let Some(cover) = &rendered.cover {
+                draw_cover(&mut frame, cover, Point::new(3, 3));
+            }
 
-            for line in lines {
-                let display_line: String = line.chars().take(max_chars).collect();
-                Text::with_baseline(
-                    &display_line,
-                    Point::new(left_margin, cursor_y),
-                    style,
-                    Baseline::Top,
-                )
-                .draw(&mut frame)
-                .expect("render text onto display buffer");
-                cursor_y += line_height;
+            let text_x = if rendered.cover.is_some() { 124 } else { 4 };
+            let max_chars = if rendered.cover.is_some() { 13 } else { 26 };
+            let line_height = font.character_size.height as i32 + 2;
+            let mut cursor_y = if rendered.cover.is_some() { 6 } else { 4 };
+
+            for line in rendered.lines {
+                for wrapped in wrap_display_line(&line, max_chars).into_iter().take(4) {
+                    Text::with_baseline(
+                        &wrapped,
+                        Point::new(text_x, cursor_y),
+                        style,
+                        Baseline::Top,
+                    )
+                    .draw(&mut frame)
+                    .expect("render text onto display buffer");
+                    cursor_y += line_height;
+                    if cursor_y > 112 {
+                        break;
+                    }
+                }
+                if cursor_y > 112 {
+                    break;
+                }
             }
 
             self.display_frame_v4(frame.buffer())?;
-            self.last_lines = Some(lines.to_vec());
+            self.last_lines = Some(rendered.cache_key);
             Ok(())
+        }
+
+        fn rendered_status(&mut self, snapshot: &StatusSnapshot) -> RenderedStatus {
+            let idle_line = format!("Idle polls: {}", snapshot.idle_events);
+            match snapshot.last_action.as_ref() {
+                Some(ControllerAction::Started { card, track }) => {
+                    self.rendered_track_status("Playing", Some(card), track)
+                }
+                Some(ControllerAction::Switched {
+                    to_card, to_track, ..
+                }) => self.rendered_track_status("Playing", Some(to_card), to_track),
+                Some(ControllerAction::Stopped { .. }) => RenderedStatus::without_cover(vec![
+                    "Musicbox".to_string(),
+                    "Stopped".to_string(),
+                    idle_line,
+                ]),
+                None => RenderedStatus::without_cover(vec![
+                    "Musicbox".to_string(),
+                    "Waiting".to_string(),
+                    idle_line,
+                ]),
+            }
+        }
+
+        fn rendered_track_status(
+            &mut self,
+            state: &str,
+            _card: Option<&crate::controller::CardUid>,
+            track: &Track,
+        ) -> RenderedStatus {
+            let metadata = self.metadata_for(track);
+            let title = metadata
+                .title
+                .clone()
+                .unwrap_or_else(|| display_name_for_track(track));
+            let lines = vec![title, state.to_string()];
+            RenderedStatus {
+                cache_key: lines.clone(),
+                lines,
+                cover: metadata.cover.clone(),
+            }
+        }
+
+        fn metadata_for(&mut self, track: &Track) -> &TrackDisplayMetadata {
+            let path = track.path().to_path_buf();
+            self.metadata_cache
+                .entry(path)
+                .or_insert_with(|| TrackDisplayMetadata::load(track.path()))
         }
     }
 
     impl StatusDisplay for WaveshareDisplay {
         fn update(&mut self, snapshot: &StatusSnapshot) -> Result<(), DisplayError> {
-            let lines = status_lines(snapshot);
-            self.render_lines(&lines).map_err(DisplayError::from)
+            self.render_snapshot(snapshot).map_err(DisplayError::from)
         }
 
         fn shutdown(&mut self) -> Result<(), DisplayError> {
@@ -422,6 +496,163 @@ pub mod waveshare {
             self.power.set_value(0).map_err(WaveshareError::Gpio)?;
             Ok(())
         }
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct TrackDisplayMetadata {
+        title: Option<String>,
+        cover: Option<CoverImage>,
+    }
+
+    impl TrackDisplayMetadata {
+        fn load(path: &Path) -> Self {
+            use id3::TagLike;
+
+            let Ok(tag) = id3::Tag::read_from_path(path) else {
+                return Self::default();
+            };
+
+            let title = tag
+                .title()
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .map(ToOwned::to_owned);
+            let cover = tag
+                .pictures()
+                .find_map(|picture| CoverImage::from_encoded_bytes(&picture.data).ok());
+
+            Self { title, cover }
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct CoverImage {
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    }
+
+    impl CoverImage {
+        fn from_encoded_bytes(bytes: &[u8]) -> Result<Self, image::ImageError> {
+            use image::{GenericImageView, imageops::FilterType};
+
+            let image = image::load_from_memory(bytes)?;
+            let (width, height) = image.dimensions();
+            let side = width.min(height);
+            let x = (width - side) / 2;
+            let y = (height - side) / 2;
+            let cropped = image.crop_imm(x, y, side, side);
+            let resized = cropped.resize_exact(COVER_SIZE, COVER_SIZE, FilterType::Triangle);
+            let luma = resized.to_luma8();
+            Ok(Self {
+                width: COVER_SIZE,
+                height: COVER_SIZE,
+                pixels: luma.into_raw(),
+            })
+        }
+    }
+
+    struct RenderedStatus {
+        cache_key: Vec<String>,
+        lines: Vec<String>,
+        cover: Option<CoverImage>,
+    }
+
+    impl RenderedStatus {
+        fn without_cover(lines: Vec<String>) -> Self {
+            Self {
+                cache_key: lines.clone(),
+                lines,
+                cover: None,
+            }
+        }
+    }
+
+    fn display_name_for_track(track: &Track) -> String {
+        track
+            .path()
+            .file_stem()
+            .or_else(|| track.path().file_name())
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| track.path().display().to_string())
+    }
+
+    fn draw_cover(display: &mut Display2in13, cover: &CoverImage, origin: Point) {
+        let bounds = Rectangle::new(origin, Size::new(cover.width, cover.height));
+
+        for y in 0..cover.height {
+            for x in 0..cover.width {
+                let idx = (y * cover.width + x) as usize;
+                let threshold = bayer_threshold(x, y);
+                let color = if cover.pixels[idx] < threshold {
+                    Color::Black
+                } else {
+                    Color::White
+                };
+                Pixel(origin + Point::new(x as i32, y as i32), color)
+                    .draw(display)
+                    .expect("draw cover pixel");
+            }
+        }
+
+        bounds
+            .into_styled(PrimitiveStyle::with_stroke(Color::Black, 1))
+            .draw(display)
+            .expect("draw cover border");
+    }
+
+    fn bayer_threshold(x: u32, y: u32) -> u8 {
+        const BAYER_4X4: [[u8; 4]; 4] =
+            [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+        BAYER_4X4[(y % 4) as usize][(x % 4) as usize] * 16 + 8
+    }
+
+    fn wrap_display_line(line: &str, max_chars: usize) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut current = String::new();
+        for word in line.split_whitespace() {
+            let separator = usize::from(!current.is_empty());
+            if current.chars().count() + separator + word.chars().count() <= max_chars {
+                if !current.is_empty() {
+                    current.push(' ');
+                }
+                current.push_str(word);
+            } else {
+                if !current.is_empty() {
+                    lines.push(current);
+                    current = String::new();
+                }
+                if word.chars().count() <= max_chars {
+                    current.push_str(word);
+                } else {
+                    lines.extend(split_long_word(word, max_chars));
+                }
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines
+    }
+
+    fn split_long_word(word: &str, max_chars: usize) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut current = String::new();
+        for ch in word.chars() {
+            if current.chars().count() == max_chars {
+                lines.push(current);
+                current = String::new();
+            }
+            current.push(ch);
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
+        lines
     }
 }
 
