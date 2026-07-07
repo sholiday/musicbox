@@ -27,6 +27,7 @@ Linux hosts can keep Musicbox running in the background by installing the sample
    sudo useradd --system --create-home musicbox
    sudo usermod -a -G audio musicbox
    sudo cp examples/musicbox.service /etc/systemd/system/musicbox.service
+   sudo cp examples/musicbox.logrotate /etc/logrotate.d/musicbox
    sudoedit /etc/systemd/system/musicbox.service
    ```
 2. Optionally supply extra overrides in `/etc/default/musicbox` (one `KEY=value` per line). Common overrides:
@@ -46,4 +47,4 @@ Linux hosts can keep Musicbox running in the background by installing the sample
    journalctl -u musicbox -f
    ```
 
-The sample unit restarts automatically on failure, keeps recent logs in `journalctl`, and mirrors them to `/var/log/musicbox/musicbox.log` via `LogsDirectory` so you retain traces across reboots. Place configuration files and media under the `WorkingDirectory` to keep permissions straightforward, and ensure `pcscd` is enabled when using the USB reader (`sudo systemctl enable --now pcscd`).
+The sample unit restarts automatically on failure, keeps recent logs in `journalctl`, and mirrors them to `/var/log/musicbox/musicbox.log` via `LogsDirectory` so you retain traces across reboots. The sample logrotate rule caps that file by rotating it daily or when it reaches 10 MiB. Place configuration files and media under the `WorkingDirectory` to keep permissions straightforward, and ensure `pcscd` is enabled when using the USB reader (`sudo systemctl enable --now pcscd`).

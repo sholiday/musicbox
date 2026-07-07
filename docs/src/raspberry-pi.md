@@ -61,6 +61,7 @@ An example unit file lives at `examples/musicbox.service`. It assumes that the b
 1. Copy and edit the unit as needed:
    ```bash
    sudo cp examples/musicbox.service /etc/systemd/system/musicbox.service
+   sudo cp examples/musicbox.logrotate /etc/logrotate.d/musicbox
    sudoedit /etc/systemd/system/musicbox.service
    ```
 2. Optionally add overrides in `/etc/default/musicbox` (one `KEY=value` per line). Typical entries:
@@ -75,7 +76,7 @@ An example unit file lives at `examples/musicbox.service`. It assumes that the b
    sudo systemctl enable --now musicbox.service
    ```
 
-The unit restarts automatically on failure and streams stdout/stderr both to journald (`journalctl -u musicbox`) and to `/var/log/musicbox/musicbox.log`, giving you a persistent log even after reboots.
+The unit restarts automatically on failure and streams stdout/stderr both to journald (`journalctl -u musicbox`) and to `/var/log/musicbox/musicbox.log`, giving you a persistent log even after reboots. The sample logrotate rule caps that file by rotating it daily or when it reaches 10 MiB.
 
 ### Authorize PC/SC reader access
 
