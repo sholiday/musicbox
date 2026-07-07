@@ -8,9 +8,21 @@ Add the cross-compilation target once:
 
 ```bash
 rustup target add armv7-unknown-linux-gnueabihf
+# For newer Raspberry Pi systems running a 64-bit OS:
+rustup target add aarch64-unknown-linux-gnu
 ```
 
 Install native dependencies required by optional features (ALSA and PC/SC headers) if you plan to enable them. Check your platform’s package manager for packages such as `libasound2-dev` and `libpcsclite-dev`.
+
+On Debian/Ubuntu hosts, the 64-bit Raspberry Pi target commonly needs the cross linker and arm64 development packages via multiarch:
+
+```bash
+sudo dpkg --add-architecture arm64
+sudo apt update
+sudo apt install gcc-aarch64-linux-gnu libasound2-dev:arm64 libpcsclite-dev:arm64
+```
+
+The build scripts expect pkg-config files under `/usr/lib/<arch>/pkgconfig` and sysroot prefixes under `/usr/<arch>`. A dedicated sysroot works too, but keep `.cargo/config.toml` and the matching build script in sync if those paths differ on your host.
 
 ## Build Raspberry Pi Artifacts
 
@@ -21,6 +33,14 @@ CARGO_FEATURES="audio-rodio nfc-pcsc debug-http" scripts/build-armv7.sh --releas
 ```
 
 Artifacts land under `target/armv7-unknown-linux-gnueabihf/release/`. Adjust `CARGO_FEATURES` to match your deployment:
+
+For newer Raspberry Pi deployments running a 64-bit OS, build for `aarch64-unknown-linux-gnu` instead:
+
+```bash
+CARGO_FEATURES="audio-rodio nfc-pcsc debug-http waveshare-display" scripts/build-aarch64.sh --release
+```
+
+Artifacts land under `target/aarch64-unknown-linux-gnu/release/`.
 
 - `audio-rodio` for ALSA playback.
 - `nfc-pcsc` for the USB NFC reader.
